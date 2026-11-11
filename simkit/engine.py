@@ -1,4 +1,5 @@
 """Run lifecycle: init, sprints (waves, merges, CI), handovers, quiz, grading, smoke test, isolation check."""
+import hashlib
 import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -240,6 +241,12 @@ REPO_INTRO = ('Today is the LIGHTHOUSE knowledge review before go-live. Answer e
               'If you cannot find an answer, answer exactly "unknown"; do not guess.')
 
 
+def full_final(run, key, row):
+    """The session's whole final reply, from its transcript; the state row keeps only a 1,500-char tail."""
+    res = sessions.parse_transcript(run.transcripts / f'{key}.jsonl').get('result') or {}
+    return res.get('result') or (row or {}).get('final') or ''
+
+
 def quiz_dir(run, mode):
     """memory mode keeps the original paths (quiz/answers, quiz/grades) so older runs stay readable."""
     return run.dir / 'quiz' if mode == 'memory' else run.dir / 'quiz' / mode
@@ -258,17 +265,19 @@ def quiz(run, mode='memory'):
         if not (run.stores / agent['id']).exists():
             continue
         header = f"You are {agent['name']}, {agent['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust."
+        key = f'quiz/{agent["id"]}' if mode == 'memory' else f'quiz-{mode}/{agent["id"]}'
         if mode == 'memory':
             room = run.dir / 'quizroom' / agent['id']
             stores.bind(run.stores / agent['id'], run.scenario['domain'], room)
-            row = _session(run, f'quiz/{agent["id"]}', agent, header + '\n\n' + body, room, allow=[],
+            row = _session(run, key, agent, header + '\n\n' + body, room, allow=[],
                            deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']))
         else:
-            gitops.autocommit(run.ws / agent['id'], agent['id'])
-            gitops.git(run.ws / agent['id'], 'fetch', '-q', 'origin')
-            gitops.git(run.ws / agent['id'], 'checkout', '-q', '-B', f"{agent['id']}/quiz", 'origin/main')
-            row = _session(run, f'quiz-repo/{agent["id"]}', agent, header + '\n\n' + body, run.ws / agent['id'])
-        answers = _last_json(row.get('final') or '') or {}
+            if not (run.state()['sessions'].get(key) or {}).get('ended'):
+                gitops.autocommit(run.ws / agent['id'], agent['id'])
+                gitops.git(run.ws / agent['id'], 'fetch', '-q', 'origin')
+                gitops.git(run.ws / agent['id'], 'checkout', '-q', '-B', f"{agent['id']}/quiz", 'origin/main')
+            row = _session(run, key, agent, header + '\n\n' + body, run.ws / agent['id'])
+        answers = _last_json(full_final(run, key, row)) or {}
         write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **answers})
     run.mark('quiz' if mode == 'memory' else f'quiz-{mode}')
 
@@ -295,10 +304,12 @@ def grade(run, mode='memory'):
                   '"unknown" (answered unknown or no answer). Do not use any tools.\n\n'
                   f'QUESTIONS AND GROUND TRUTH\n{key_text}\n\nANSWERS\n{json.dumps(a.get("answers", []), indent=1)}\n\n'
                   'Reply with only a JSON object: {"grades": [{"id": "q1", "grade": "...", "note": "short reason"}, ...]}')
-        key = f'grade/{path.stem}' if mode == 'memory' else f'grade-{mode}/{path.stem}'
+        # Keyed by the answers graded, so corrected answers are graded afresh rather than served a cached grade.
+        digest = hashlib.sha256(json.dumps(a.get('answers', []), sort_keys=True).encode()).hexdigest()[:8]
+        key = (f'grade/{path.stem}' if mode == 'memory' else f'grade-{mode}/{path.stem}') + f'@{digest}'
         row = _session(run, key, grader, prompt, room, allow=[], deny=QUIZ_DENY + ['Bash', 'PowerShell'],
                        settings={'disableAllHooks': True})
-        write_json(out, {'agent': path.stem, **(_last_json(row.get('final') or '') or {'error': 'unparsed'})})
+        write_json(out, {'agent': path.stem, **(_last_json(full_final(run, key, row)) or {'error': 'unparsed'})})
     run.mark('grade' if mode == 'memory' else f'grade-{mode}')
 
 
