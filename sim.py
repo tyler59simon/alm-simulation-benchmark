@@ -1,11 +1,12 @@
 """lm-team-sim: simulate an enterprise team whose agents each have a private Living Memory store.
 
     python sim.py smoke   SCENARIO                 tiny harness check on a throwaway run
-    python sim.py init    SCENARIO [--label L]     new run folder (repo, clones, stores, toolchain prime, seed CI)
+    python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic]
+                                                   new run folder (repo, clones, stores, toolchain prime, seed CI)
     python sim.py sprint  N [--run RUN]            one sprint (resumable)
     python sim.py run     [--run RUN] [--through N] all sprints (resumable)
-    python sim.py quiz    [--run RUN]              memory-only recall quiz for every agent
-    python sim.py grade   [--run RUN]              grade quiz answers against ground truth
+    python sim.py quiz    [--run RUN] [--mode memory|repo]  recall quiz (memory only, or with the repo)
+    python sim.py grade   [--run RUN] [--mode memory|repo]  grade quiz answers against ground truth
     python sim.py analyze [--run RUN]              write metrics.json and print a summary
     python sim.py compare RUN_A RUN_B              diff comparable metrics of two runs
     python sim.py verify-isolation [--run RUN]     no run session in the real store or another agent's store
@@ -29,9 +30,13 @@ def main(argv=None):
     sub = p.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('smoke'); s.add_argument('scenario')
     s = sub.add_parser('init'); s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--no-prime', action='store_true')
+    s.add_argument('--memory', choices=['on', 'off'], default='on', help='off: the control arm, every hook disabled')
+    s.add_argument('--semantic', action='store_true', help='install the embedding model into every store')
     s = sub.add_parser('sprint'); s.add_argument('n', type=int); s.add_argument('--run')
     s = sub.add_parser('run'); s.add_argument('--run'); s.add_argument('--through', type=int)
-    for name in ('quiz', 'grade', 'analyze', 'verify-isolation', 'status', 'finish'):
+    for name in ('quiz', 'grade'):
+        s = sub.add_parser(name); s.add_argument('--run'); s.add_argument('--mode', choices=['memory', 'repo'], default='memory')
+    for name in ('analyze', 'verify-isolation', 'status', 'finish'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('compare'); s.add_argument('a'); s.add_argument('b')
     a = p.parse_args(argv)
@@ -39,7 +44,7 @@ def main(argv=None):
     if a.cmd == 'smoke':
         print(json.dumps(engine.smoke(a.scenario), indent=2))
     elif a.cmd == 'init':
-        run = engine.init(a.scenario, a.label, prime=not a.no_prime)
+        run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic)
         print(run.dir)
     elif a.cmd in ('sprint', 'run'):
         run = get()
@@ -49,9 +54,9 @@ def main(argv=None):
             log(run, f'STOPPED: {e}')
             return 3
     elif a.cmd == 'quiz':
-        engine.quiz(get())
+        engine.quiz(get(), a.mode)
     elif a.cmd == 'grade':
-        engine.grade(get())
+        engine.grade(get(), a.mode)
     elif a.cmd == 'analyze':
         print(analyze.summary(analyze.analyze(get())))
     elif a.cmd == 'compare':

@@ -65,6 +65,28 @@
       "should_know": ["la2", "dev-ledger", "qa"],
       "patterns": {"current": ["maintenance fee", "5\\.00", "500\\.00"]}
     },
+    "P1": {
+      "summary": "Project phase and go-live criterion",
+      "answer": "Sprint 4 of 4: the parallel-run dress rehearsal and go-live readiness. Go-live requires golden-master parity for 2025-02-01..2025-03-31 (daily POSTED, REJECTS and ACCTMAST, plus month-end statements) except deviations the business approved in writing.",
+      "source": "sprint themes in every prompt, README.md, EPIC-001",
+      "should_know": ["po", "arch", "la1", "la2", "dev-acct", "dev-ledger", "dev-int", "dev-int2", "dev-pay", "mig", "qa", "sec", "ops"],
+      "patterns": {"current": ["dress rehearsal", "go-live", "parity"]}
+    },
+    "P2": {
+      "summary": "Module ownership",
+      "answer": "Payments: Sofia Marchetti (dev-pay). Interest: Lucas Ferreira (dev-int2) since sprint 3, previously Chen Wei (dev-int), who moved to the Cards team. Parity testing: Elena Petrova (qa).",
+      "source": "roster in every prompt; handoff in sprint 3",
+      "should_know": ["po", "arch", "la1", "la2", "dev-acct", "dev-ledger", "dev-int2", "dev-pay", "mig", "qa", "sec", "ops"],
+      "patterns": {"current": ["owner", "owns", "ownership"]}
+    },
+    "P3": {
+      "summary": "Approved deviations from legacy",
+      "answer": "Only one: the overdraft fee is $25.00 per overdraft event instead of $35.00 (decision PC-2025-14). Everything else must match legacy.",
+      "stale_answer": "none, or $35.00",
+      "source": "memo to po (sprint 2)",
+      "should_know": ["po", "arch", "dev-ledger", "qa", "ops"],
+      "patterns": {"current": ["deviation", "pc-2025-14", "25\\.00"]}
+    },
     "O2": {
       "summary": "Overdraft counting",
       "answer": "Only CHK may go negative; the overdraft count increases by one each time a debit takes the balance from >= 0 to < 0 (one event per crossing). Savings products reject with NSF instead. Fee = count x fee at month end, then count resets.",

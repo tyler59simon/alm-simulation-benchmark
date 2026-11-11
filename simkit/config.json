@@ -1,5 +1,6 @@
 {
   "python": "C:\\Users\\tyler\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.10_qbz5n2kfra8p0\\python.exe",
   "lm_cli": "%LOCALAPPDATA%\\agentic-living-memory\\app\\living_memory.py",
-  "claude": "claude"
+  "claude": "claude",
+  "semantic_model_dir": "C:\\Users\\tyler\\LivingMemory\\.models\\potion-retrieval-32M"
 }

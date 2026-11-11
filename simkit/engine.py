@@ -25,11 +25,17 @@ def lm_version(cfg):
     return {'app': str(app), 'tree_sha256': tree_hash(parts)[:16], 'version': version}
 
 
-def init(scenario, label=None, prime=True):
+def init(scenario, label=None, prime=True, memory='on', semantic=False):
+    """memory='off' runs every agent with hooks disabled (the control arm); semantic=True installs the embedding model
+    into each store from the machine's model folder (config semantic_model_dir), offline and hash-verified."""
     src = SCENARIOS / scenario
     if not (src / 'scenario.json').exists():
         raise SystemExit(f'No scenario {scenario}')
+    if memory not in ('on', 'off'):
+        raise SystemExit("memory must be 'on' or 'off'")
     cfg = config()
+    if semantic and not Path(cfg.get('semantic_model_dir') or '').is_dir():
+        raise SystemExit(f"semantic: no model folder at {cfg.get('semantic_model_dir')!r} (set semantic_model_dir in simkit/config.json)")
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     path = RUNS / (f'{scenario}-{stamp}' + (f'-{label}' if label else ''))
     path.mkdir(parents=True)
@@ -38,7 +44,7 @@ def init(scenario, label=None, prime=True):
     write_json(path / 'manifest.json', {
         'scenario': scenario, 'label': label, 'created': now(), 'scenario_sha256': tree_hash([src])[:16],
         'living_memory': lm_version(cfg), 'claude_code': claude_v, 'harness_sha256': tree_hash([HOME / 'simkit'])[:16],
-        'real_store': cfg.get('real_store'), 'finished': None})
+        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic)}, 'finished': None})
     run = Run(path)
     log(run, f'init {path.name}')
     gitops.init_repo(run)
@@ -60,6 +66,8 @@ def ensure_agent(run, agent):
     store = run.stores / agent['id']
     if not (store / 'bindings.json').exists():
         stores.bootstrap(store, run.scenario['domain'], [repo], run.scenario.get('taxonomy_extra', []))
+        if run.options.get('semantic'):
+            stores.lm(store, ['semantic', 'install', '--from', config()['semantic_model_dir']])
     return repo, store
 
 
@@ -224,26 +232,46 @@ QUIZ_SHELL_DENY = [f'{shell}({c} *)' for shell in ('Bash', 'PowerShell') for c i
                     'Get-Content', 'Get-ChildItem', 'Select-String')]   # not python: the LM CMD is a python command
 
 
-def quiz(run):
+QUIZ_MODES = ('memory', 'repo')
+REPO_INTRO = ('Today is the LIGHTHOUSE knowledge review before go-live. Answer every question in one or two sentences, '
+              'using anything you can find (the repository, the ticket board and whatever you already know). '
+              'If you cannot find an answer, answer exactly "unknown"; do not guess.')
+
+
+def quiz_dir(run, mode):
+    """memory mode keeps the original paths (quiz/answers, quiz/grades) so older runs stay readable."""
+    return run.dir / 'quiz' if mode == 'memory' else run.dir / 'quiz' / mode
+
+
+def quiz(run, mode='memory'):
+    """memory: only Living Memory is available (repo reads denied, empty room). repo: the agent's own clone and tools."""
+    if mode not in QUIZ_MODES:
+        raise SystemExit(f'quiz mode must be one of {QUIZ_MODES}')
     q = run.quiz
-    body = q['intro'] + '\n\n' + '\n'.join(f"{x['id']}. {x['text']}" for x in q['questions'])
+    intro = q['intro'] if mode == 'memory' else REPO_INTRO
+    body = intro + '\n\n' + '\n'.join(f"{x['id']}. {x['text']}" for x in q['questions'])
     body += ('\n\nWhen you are done, reply with only a JSON object of the form '
              '{"answers": [{"id": "q1", "answer": "..."}, ...]} covering every question.')
     for agent in run.scenario['roster']:
-        key = f'quiz/{agent["id"]}'
         if not (run.stores / agent['id']).exists():
             continue
-        room = run.dir / 'quizroom' / agent['id']
-        stores.bind(run.stores / agent['id'], run.scenario['domain'], room)
         header = f"You are {agent['name']}, {agent['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust."
-        row = _session(run, key, agent, header + '\n\n' + body, room, allow=[],
-                       deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']))
+        if mode == 'memory':
+            room = run.dir / 'quizroom' / agent['id']
+            stores.bind(run.stores / agent['id'], run.scenario['domain'], room)
+            row = _session(run, f'quiz/{agent["id"]}', agent, header + '\n\n' + body, room, allow=[],
+                           deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']))
+        else:
+            gitops.autocommit(run.ws / agent['id'], agent['id'])
+            gitops.git(run.ws / agent['id'], 'fetch', '-q', 'origin')
+            gitops.git(run.ws / agent['id'], 'checkout', '-q', '-B', f"{agent['id']}/quiz", 'origin/main')
+            row = _session(run, f'quiz-repo/{agent["id"]}', agent, header + '\n\n' + body, run.ws / agent['id'])
         answers = _last_json(row.get('final') or '') or {}
-        write_json(run.dir / 'quiz' / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **answers})
-    run.mark('quiz')
+        write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **answers})
+    run.mark('quiz' if mode == 'memory' else f'quiz-{mode}')
 
 
-def grade(run):
+def grade(run, mode='memory'):
     facts = run.truth['facts']
     grader_store = run.stores / '_grader'
     if not (grader_store / 'tag_taxonomy.json').exists():
@@ -254,9 +282,9 @@ def grade(run):
     key_text = '\n'.join(f"{qq['id']} (fact {qq['fact']}): {qq['text']}\n   ground truth: {facts[qq['fact']]['answer']}"
                          + (f"\n   stale (outdated) answer: {facts[qq['fact']]['stale_answer']}" if facts[qq['fact']].get('stale_answer') else '')
                          for qq in run.quiz['questions'])
-    for path in sorted((run.dir / 'quiz' / 'answers').glob('*.json')):
+    for path in sorted((quiz_dir(run, mode) / 'answers').glob('*.json')):
         a = read_json(path)
-        out = run.dir / 'quiz' / 'grades' / path.name
+        out = quiz_dir(run, mode) / 'grades' / path.name
         if out.exists():
             continue
         prompt = ('You are grading a knowledge quiz for a software project. For each question compare the answer with '
@@ -265,10 +293,11 @@ def grade(run):
                   '"unknown" (answered unknown or no answer). Do not use any tools.\n\n'
                   f'QUESTIONS AND GROUND TRUTH\n{key_text}\n\nANSWERS\n{json.dumps(a.get("answers", []), indent=1)}\n\n'
                   'Reply with only a JSON object: {"grades": [{"id": "q1", "grade": "...", "note": "short reason"}, ...]}')
-        row = _session(run, f'grade/{path.stem}', grader, prompt, room, allow=[], deny=QUIZ_DENY + ['Bash', 'PowerShell'],
+        key = f'grade/{path.stem}' if mode == 'memory' else f'grade-{mode}/{path.stem}'
+        row = _session(run, key, grader, prompt, room, allow=[], deny=QUIZ_DENY + ['Bash', 'PowerShell'],
                        settings={'disableAllHooks': True})
         write_json(out, {'agent': path.stem, **(_last_json(row.get('final') or '') or {'error': 'unparsed'})})
-    run.mark('grade')
+    run.mark('grade' if mode == 'memory' else f'grade-{mode}')
 
 
 # ---------------- smoke & isolation ----------------

@@ -59,6 +59,9 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
             '--max-budget-usd', str(tier.get('budget_usd', 1.0)), '--permission-mode', tier.get('permission_mode', 'acceptEdits')]
     if tier.get('effort'):
         args += ['--effort', tier['effort']]
+    if run.options.get('memory') == 'off':
+        # Control arm: no hooks, so no Living Memory session line; the gated CLAUDE.md protocol block stays inert.
+        settings = {**(settings or {}), 'disableAllHooks': True}
     if settings:
         args += ['--settings', json.dumps(settings)]
     if allow:

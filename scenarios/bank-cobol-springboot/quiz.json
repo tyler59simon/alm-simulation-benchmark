@@ -12,6 +12,9 @@
     {"id": "q9", "fact": "O1", "text": "When is a maintenance fee charged, and how much?"},
     {"id": "q10", "fact": "O2", "text": "How does the legacy system count overdrafts for the overdraft fee?"},
     {"id": "q11", "fact": "H1", "text": "Who owns the interest module now, and what happened to its previous owner?"},
-    {"id": "q12", "fact": "I1", "text": "What happened in incident INC-0042, how does the legacy system prevent it, and what was the fix?"}
+    {"id": "q12", "fact": "I1", "text": "What happened in incident INC-0042, how does the legacy system prevent it, and what was the fix?"},
+    {"id": "q13", "fact": "P1", "text": "What phase is the project in, and what has to be true before it can go live?"},
+    {"id": "q14", "fact": "P2", "text": "Who owns the payments module, the interest module and parity testing?"},
+    {"id": "q15", "fact": "P3", "text": "Which deviations from legacy behaviour has the business approved?"}
   ]
 }

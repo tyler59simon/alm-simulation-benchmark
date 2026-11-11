@@ -59,5 +59,7 @@
   "app_checks": "app_checks.json",
   "events": "events.json",
   "ground_truth": "ground_truth.json",
-  "quiz": "quiz.json"
+  "quiz": "quiz.json",
+  "mistakes": "mistakes.json",
+  "decision_docs": ["docs/adr/ADR-*.md", "docs/business-rules.md", "docs/handoff/*.md", "docs/incidents/*.md"]
 }

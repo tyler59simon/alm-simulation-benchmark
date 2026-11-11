@@ -178,11 +178,14 @@ def app_checks(run):
 GRADE_SCORE = {'correct': 1.0, 'partial': 0.5}
 
 
-def quiz_metrics(run, per_store):
+def quiz_metrics(run, per_store, mode='memory'):
     qs = {q['id']: q for q in run.quiz.get('questions', [])}
     facts = run.truth.get('facts', {})
     matrix, rows = {}, []
-    for p in sorted((run.dir / 'quiz' / 'grades').glob('*.json')):
+    grades_dir = (run.dir / 'quiz' if mode == 'memory' else run.dir / 'quiz' / mode) / 'grades'
+    if not grades_dir.exists():
+        return None
+    for p in sorted(grades_dir.glob('*.json')):
         g = read_json(p, {})
         agent = g.get('agent', p.stem)
         matrix[agent] = {x['id']: x.get('grade') for x in g.get('grades', []) if isinstance(x, dict)}
@@ -207,6 +210,89 @@ def quiz_metrics(run, per_store):
             'by_agent': by_agent, 'by_fact_should_know': by_fact,
             'failure_kinds_should_know': dict(Counter(r['kind'] for r in rows if r['should_know'])),
             'stale_answers': [f"{r['agent']}:{r['q']}" for r in rows if r['grade'] == 'stale']}
+
+
+# ---------- mistakes, pointers, latency ----------
+WORK_KEY = re.compile(r'^s\d+/')
+
+
+def live_scenario(run, name):
+    """Analysis-only definitions added after a run was frozen (e.g. mistakes.json) come from the live scenario folder."""
+    from .common import SCENARIOS
+    return read_json(SCENARIOS / run.manifest.get('scenario', '') / name)
+
+
+def _shell_calls(path):
+    """(tool name, command text) for every shell tool call in a transcript."""
+    out = []
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        msg = ev.get('message') if isinstance(ev, dict) else None
+        content = msg.get('content') if isinstance(msg, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if isinstance(c, dict) and c.get('type') == 'tool_use' and isinstance(c.get('input'), dict):
+                out.append((c.get('name'), str(c['input'].get('command', ''))))
+    return out
+
+
+def mistake_metrics(run):
+    """Per planted mistake: how often each agent made it before and after its own store first held a note about it."""
+    spec = read_json(run.scenario_dir / run.scenario.get('mistakes', 'mistakes.json')) or live_scenario(run, 'mistakes.json') or {}
+    sess = sorted((r for r in run.state()['sessions'].values() if WORK_KEY.match(r['key'])), key=lambda r: r['started'])
+    out = {}
+    for mk in spec.get('mistakes', []):
+        pat, note_pat = re.compile(mk['pattern']), re.compile(mk['note_pattern'])
+        captured = {}
+        for store in run.stores.glob('*'):
+            times = [str(n.get('created')) for n in store_notes(store) if note_pat.search(text_of(n))]
+            if times:
+                captured[store.name] = min(times)
+        per = defaultdict(lambda: {'before': 0, 'after': 0})
+        for r in sess:
+            t = run.transcripts / f"{r['key']}.jsonl"
+            if not t.exists():
+                continue
+            n = sum(1 for tool, cmd in _shell_calls(t) if (not mk.get('tool') or tool == mk['tool']) and pat.search(cmd))
+            if n:
+                cap = captured.get(r['agent'])
+                per[r['agent']]['after' if cap and r['started'] >= cap else 'before'] += n
+        out[mk['id']] = {'desc': mk['desc'], 'captured_by': captured, 'per_agent': dict(per),
+                         'repeats_after_capture': sum(v['after'] for v in per.values()),
+                         'total': sum(v['before'] + v['after'] for v in per.values())}
+    return out
+
+
+def pointer_coverage(run):
+    """Decision documents in the final repo whose author's store has a note naming the document."""
+    globs = run.scenario.get('decision_docs') or (live_scenario(run, 'scenario.json') or {}).get('decision_docs') or []
+    docs = sorted({p for g in globs for p in run.integration.glob(g) if p.is_file()})
+    from .gitops import git
+    rows = []
+    for d in docs:
+        rel = d.relative_to(run.integration).as_posix()
+        email = git(run.integration, 'log', '--diff-filter=A', '--format=%ae', '-1', '--', rel, check=False).stdout.strip()
+        author = email.split('@')[0] if email else None
+        key = d.stem.lower()
+        found = bool(author) and (run.stores / author).exists() and any(
+            key in text_of(n) or rel.lower() in text_of(n) for n in store_notes(run.stores / author) if is_active(n))
+        rows.append({'doc': rel, 'author': author, 'pointer': found})
+    return {'docs': len(rows), 'with_pointer': sum(r['pointer'] for r in rows),
+            'coverage': round(sum(r['pointer'] for r in rows) / len(rows), 3) if rows else None, 'rows': rows}
+
+
+def hook_latency(run):
+    by = defaultdict(list)
+    for store in run.stores.glob('*'):
+        if store.name.startswith('_'):
+            continue
+        for p in (store / 'logs').glob('*.jsonl'):
+            for r in read_jsonl(p):
+                if r.get('kind') == 'hook' and isinstance(r.get('ms'), (int, float)):
+                    by[r.get('event')].append(r['ms'])
+    return {e: {'n': len(v), 'p50': pct(v, .5), 'p95': pct(v, .95)} for e, v in sorted(by.items())}
 
 
 # ---------- run ----------
@@ -237,7 +323,7 @@ def analyze(run):
         t['lm_calls'] += r.get('lm_calls') or 0; t['turns'] += r.get('turns') or 0
     ci = read_jsonl(run.dir / 'ci.jsonl')
     merges = read_jsonl(run.dir / 'merges.jsonl')
-    work = [r for r in sess if r['key'].startswith('s')]
+    work = [r for r in sess if WORK_KEY.match(r['key'])]
     metrics = {
         'schema': SCHEMA, 'run': run.dir.name, 'manifest': run.manifest,
         'totals': {'sessions': len(sess), 'work_sessions': len(work), 'cost_usd': run.spent(),
@@ -257,22 +343,37 @@ def analyze(run):
         'merges': {'attempts': len(merges), 'failed_final': sum(1 for r in merges if not r.get('ok') and r.get('attempt') == 2),
                    'conflicts_first_try': sum(1 for r in merges if not r.get('ok') and r.get('attempt') == 1),
                    'files_swept_uncommitted': sum(r.get('swept') or 0 for r in merges)},
-        'handovers': read_jsonl(run.dir / 'handovers.jsonl'), 'app': app_checks(run), 'quiz': quiz_metrics(run, per_store)}
+        'handovers': read_jsonl(run.dir / 'handovers.jsonl'), 'app': app_checks(run),
+        'options': run.options, 'quiz': quiz_metrics(run, per_store), 'quiz_repo': quiz_metrics(run, per_store, 'repo'),
+        'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
+        'currency': {'updates': sum(s['usage'].get('update', 0) for s in per_store.values()),
+                     'supersedes': sum(s['by_status'].get('superseded', 0) for s in per_store.values())}}
     write_json(run.dir / 'metrics.json', metrics)
     return metrics
 
 
 def summary(m):
-    t, q = m['totals'], m['quiz']
-    lines = [f"run {m['run']}: {t['sessions']} sessions, ${t['cost_usd']}, failed {t['failed_sessions']}, timeouts {t['timeouts']}",
+    t, q, qr = m['totals'], m.get('quiz') or {}, m.get('quiz_repo') or {}
+    opts = m.get('options') or {}
+    lines = [f"run {m['run']} (memory {opts.get('memory', 'on')}, semantic {opts.get('semantic', False)}): {t['sessions']} sessions, "
+             f"${t['cost_usd']}, failed {t['failed_sessions']}, timeouts {t['timeouts']}",
              f"memory: {t['notes_active']} active notes, {t['maps']} maps, {t['noise_notes']} noise-like, {t['lm_calls']} LM calls "
              f"({t['lm_calls_per_work_session']}/work session), {t['lm_cli_errors']} CLI errors, blocked-path attempts {t['leaks']}",
+             f"currency: {(m.get('currency') or {}).get('updates')} updates, {(m.get('currency') or {}).get('supersedes')} superseded; "
+             f"pointers: {(m.get('pointers') or {}).get('with_pointer')}/{(m.get('pointers') or {}).get('docs')} decision docs",
              f"CI: {m['ci']['green']}/{m['ci']['runs']} green, last {'green' if m['ci']['last_ok'] else 'RED'}; merges: "
-             f"{m['merges']['conflicts_first_try']} conflicts, {m['merges']['failed_final']} unresolved",
-             f"quiz: all {q['score_all']}, should-know {q['score_should_know']}, failures {q['failure_kinds_should_know']}"]
+             f"{m['merges']['conflicts_first_try']} conflicts, {m['merges']['failed_final']} unresolved"]
+    if q:
+        lines.append(f"quiz (memory only): all {q['score_all']}, should-know {q['score_should_know']}, failures {q['failure_kinds_should_know']}")
+    if qr:
+        lines.append(f"quiz (with repo): all {qr['score_all']}, should-know {qr['score_should_know']}")
+    for mid, mk in (m.get('mistakes') or {}).items():
+        lines.append(f"mistake {mid}: {mk['total']} times, {mk['repeats_after_capture']} after the agent's own note "
+                     f"(notes in {sorted(mk['captured_by'])})")
     for fid, f in m['facts'].items():
         lines.append(f"  {fid}: in {f['duplication']} stores, should-know coverage {f['should_know_coverage']}, "
-                     f"stale-only in {f['stores_with_stale_only']}, quiz {q['by_fact_should_know'].get(fid)}")
+                     f"stale-only in {f['stores_with_stale_only']}, quiz {(q.get('by_fact_should_know') or {}).get(fid)}, "
+                     f"with repo {(qr.get('by_fact_should_know') or {}).get(fid)}")
     if m.get('app'):
         lines.append('app: ' + ', '.join(f"{c['fact']}:{'ok' if c['pass'] else 'MISSING'}" for c in m['app']['checks']))
     return '\n'.join(lines)

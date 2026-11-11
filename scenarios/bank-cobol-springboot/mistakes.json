@@ -1,0 +1,12 @@
+{
+  "note": "Environment traps an agent can learn from. 'pattern' matches a shell tool call (tool, command text); 'note_pattern' finds the agent's own note about it. analyze.py counts matches per agent in sessions started before and after that note was first captured. The briefing must not tell agents to do the trap.",
+  "mistakes": [
+    {
+      "id": "M1",
+      "desc": "Running the Windows wrapper through cmd /c from Git Bash: prints the cmd banner, builds nothing and exits 0 (a silent false green)",
+      "tool": "Bash",
+      "pattern": "\\bcmd(\\.exe)?\\s+//?[ck]\\b.*mvnw\\.cmd",
+      "note_pattern": "(?is)(?=.*(git bash|cmd /c))(?=.*mvnw)(?=.*(builds nothing|does nothing|runs nothing|nothing is built|silent|no-?op|false green|exits? 0|without building|doesn't build|does not build))"
+    }
+  ]
+}

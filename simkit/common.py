@@ -134,6 +134,7 @@ class Run:
     def __init__(self, path):
         self.dir = Path(path).resolve()
         self.manifest = read_json(self.dir / 'manifest.json', {})
+        self.options = {'memory': 'on', 'semantic': False, **(self.manifest.get('options') or {})}
         self.scenario_dir = self.dir / 'scenario'
         self.scenario = read_json(self.scenario_dir / 'scenario.json')
         self.events = read_json(self.scenario_dir / self.scenario.get('events', 'events.json'), {})

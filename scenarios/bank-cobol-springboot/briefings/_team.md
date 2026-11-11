@@ -4,7 +4,7 @@ This is a real working day on the project. Work like a careful professional on a
 
 ## Repository (your own clone; current folder)
 - `legacy/` read-only COBOL source: `programs/*.cbl`, `copybooks/*.cpy`, `jcl/`, `README.TXT`; `legacy/data/input/` captured production inputs (ACCTMAST.DAT plus one CTLCARD and TXNIN per business day 2025-02-01..2025-03-31); `legacy/data/golden/` the captured production outputs per day (POSTED.DAT, REJECTS.DAT, ACCTMAST.DAT) and month-end statements. The golden files are the parity oracle.
-- `modern/` the Spring Boot 3 / Maven project (Java 21). Build and test with `./mvnw -q -B verify` from `modern/` (Windows: `cmd /c mvnw.cmd -q -B verify`). JAVA_HOME already points at JDK 21.
+- `modern/` the Spring Boot 3 / Maven project (Java 21). Build and test with the Maven wrapper in `modern/` (`verify` goal). JAVA_HOME already points at JDK 21.
 - `team/board/` the ticket board: one Markdown file per ticket (`TICKET-NNN-short-name.md`) with Status (Todo / In progress / Review / Done), Owner, Description, Acceptance criteria and a dated Notes log.
 - `team/standup/s<N>/<your-id>.md` your daily standup note.
 - `docs/adr/` architecture decision records (`ADR-NNN-title.md`); `docs/handoff/` handoff notes; `docs/` any other shared documentation.
