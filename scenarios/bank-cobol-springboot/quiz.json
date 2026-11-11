@@ -1,0 +1,17 @@
+{
+  "intro": "Today is the LIGHTHOUSE knowledge review before go-live. The repository and the ticket board are offline for maintenance, so answer from what you know about the project. Answer every question in one or two sentences. If you do not know, answer exactly \"unknown\"; do not guess.",
+  "questions": [
+    {"id": "q1", "fact": "T1", "text": "Which interest day-count convention applies to each product (SV1, SV2, MMA, CHK)?"},
+    {"id": "q2", "fact": "T1", "text": "Why must SV1 accounts never be converted to SV2?"},
+    {"id": "q3", "fact": "T2", "text": "How is interest rounded: in the daily accrual, and when it is posted at month end?"},
+    {"id": "q4", "fact": "T3", "text": "How are dates stored in the legacy files, and how is the century decided?"},
+    {"id": "q5", "fact": "T4", "text": "What is the rule for account numbers in logs, reports and audit records, and what is exempt?"},
+    {"id": "q6", "fact": "D1", "text": "How are monetary amounts represented in the new Java code today?"},
+    {"id": "q7", "fact": "D1", "text": "Has the money-representation decision ever changed? If so, from what, to what, and why?"},
+    {"id": "q8", "fact": "D2", "text": "What overdraft fee does the new system charge, and does it match the legacy golden files?"},
+    {"id": "q9", "fact": "O1", "text": "When is a maintenance fee charged, and how much?"},
+    {"id": "q10", "fact": "O2", "text": "How does the legacy system count overdrafts for the overdraft fee?"},
+    {"id": "q11", "fact": "H1", "text": "Who owns the interest module now, and what happened to its previous owner?"},
+    {"id": "q12", "fact": "I1", "text": "What happened in incident INC-0042, how does the legacy system prevent it, and what was the fix?"}
+  ]
+}

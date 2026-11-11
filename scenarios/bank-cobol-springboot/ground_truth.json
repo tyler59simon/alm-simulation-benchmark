@@ -1,0 +1,76 @@
+{
+  "facts": {
+    "T1": {
+      "summary": "Day count by product",
+      "answer": "SV1 (Heritage Savings, all opened before 2009) accrues on 30/360: the 31st accrues 0 days and the last day of February accrues up to day 30 (3 days in a 28-day Feb). SV2 and MMA accrue actual/365 (365 even in leap years). CHK earns no interest. SV1 must stay a separate product and never be converted to SV2 (2016 regulatory complaint).",
+      "source": "memo to po (sprint 1); also visible in INTCALC product table and 2200-GET-DAYS",
+      "should_know": ["po", "arch", "la1", "dev-int", "dev-int2", "qa"],
+      "patterns": {"current": ["30/360", "30 ?/ ?360", "basis.{0,20}360"]}
+    },
+    "T2": {
+      "summary": "Rounding of interest",
+      "answer": "Daily accrual is truncated (not rounded) to 6 decimals; month-end posting rounds the accrued amount to cents with banker's rounding (half-even, ROUNDED MODE NEAREST-EVEN).",
+      "source": "INTCALC 2300-ACCRUE (no ROUNDED) and EODPOST 2100-POST-INTEREST (discoverable; la1)",
+      "should_know": ["la1", "dev-int", "dev-int2", "dev-ledger", "qa"],
+      "patterns": {"current": ["half.?even", "banker", "nearest.?even"]}
+    },
+    "T3": {
+      "summary": "Legacy date format",
+      "answer": "Dates are Julian YYDDD PIC 9(5) with a century window in DATEUTIL 9000-CONVERT-JULIAN: YY < 70 means 20YY, otherwise 19YY.",
+      "source": "DATEUTIL (discoverable; mig, la1)",
+      "should_know": ["mig", "la1", "dev-acct", "qa"],
+      "patterns": {"current": ["yyddd", "julian", "century", "< ?70", "pivot"]}
+    },
+    "T4": {
+      "summary": "Account number masking",
+      "answer": "Full account numbers must never appear in application logs, batch reports or audit records: mask to the last 4 digits (******1234); customer statements are exempt (RF-2025-07). Every balance change needs an audit record with before/after and the masked account.",
+      "source": "memo to sec (sprint 1)",
+      "should_know": ["sec", "po", "arch", "dev-acct", "dev-ledger", "dev-int", "dev-int2", "dev-pay", "mig", "qa", "ops", "la1", "la2"],
+      "patterns": {"current": ["mask", "last 4", "last four", "rf-2025-07"]}
+    },
+    "D1": {
+      "summary": "Money representation",
+      "answer": "BigDecimal with scale 4 (CFO directive CFO-2025-03, sprint 3, for phase-2 FX), replacing the earlier PMO guidance of long minor units (cents) recorded in ADR-002; rounding to cents only where business rules require (posting, fees).",
+      "stale_answer": "long minor units / cents",
+      "source": "memo to arch sprint 1 (long cents), reversed by memo to arch sprint 3",
+      "should_know": ["arch", "po", "dev-acct", "dev-ledger", "dev-int2", "dev-pay", "mig", "qa", "ops", "sec"],
+      "patterns": {"current": ["bigdecimal", "scale ?4", "scale of 4"], "stale": ["long.{0,30}(cents|minor)", "minor units", "integer cents"]}
+    },
+    "D2": {
+      "summary": "Overdraft fee",
+      "answer": "$25.00 per overdraft event (decision PC-2025-14), an approved deviation from the legacy $35.00 that the golden files show; parity must expect $25.00. Maintenance fee unchanged.",
+      "stale_answer": "$35.00",
+      "source": "memo to po (sprint 2)",
+      "should_know": ["po", "dev-ledger", "qa"],
+      "patterns": {"current": ["25\\.00", "\\$25", "pc-2025-14"], "stale": ["35\\.00", "\\$35"]}
+    },
+    "H1": {
+      "summary": "Interest module ownership",
+      "answer": "Chen Wei (dev-int) owned interest in sprints 1-2 and moved to the Cards team; Lucas Ferreira (dev-int2) took it over in sprint 3; handoff in docs/handoff/dev-int.md.",
+      "source": "roster change and handoff",
+      "should_know": ["dev-int2", "po", "arch", "qa"],
+      "patterns": {"current": ["handoff", "lucas", "ferreira", "chen wei"]}
+    },
+    "I1": {
+      "summary": "Retried transfer incident",
+      "answer": "INC-0042: a mobile retry with the same TXN-REF and a new TXN-ID was posted twice by the new system. Legacy XFERPROC rejects a non-blank TXN-REF already posted earlier the same business day with reason DUP (the 'CHANNEL RETRY GUARD'); rejected txns do not count and next-day repeats post. Fix: duplicate/idempotency check on TXN-REF per business day.",
+      "source": "memo to dev-pay and ops (sprint 4); guard discoverable in XFERPROC 2010-DUP-CHECK (la2)",
+      "should_know": ["dev-pay", "ops", "qa", "la2"],
+      "patterns": {"current": ["inc-0042", "idempot", "dup", "retry", "txn-?ref"]}
+    },
+    "O1": {
+      "summary": "Maintenance fee",
+      "answer": "At month end, CHK accounts (active or frozen) with a balance below $500.00 before fees pay a $5.00 maintenance fee (MF), written before the overdraft fee.",
+      "source": "FEEASSES (discoverable; la2)",
+      "should_know": ["la2", "dev-ledger", "qa"],
+      "patterns": {"current": ["maintenance fee", "5\\.00", "500\\.00"]}
+    },
+    "O2": {
+      "summary": "Overdraft counting",
+      "answer": "Only CHK may go negative; the overdraft count increases by one each time a debit takes the balance from >= 0 to < 0 (one event per crossing). Savings products reject with NSF instead. Fee = count x fee at month end, then count resets.",
+      "source": "XFERPROC 2560-DEBIT-ACCT (discoverable; la2)",
+      "should_know": ["la2", "dev-pay", "dev-ledger", "qa"],
+      "patterns": {"current": ["crossing", "od.?count", "overdraft count", "below zero"]}
+    }
+  }
+}

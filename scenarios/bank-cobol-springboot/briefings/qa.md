@@ -1,0 +1,1 @@
+You own quality: the golden-master parity test suite in `modern/` that replays the captured legacy inputs day by day and compares with the golden outputs, plus regression tests. You report parity gaps as tickets with evidence and you track approved deviations from legacy behaviour.

@@ -1,0 +1,59 @@
+{
+  "handovers": [
+    {"before_sprint": 3, "from": "dev-int", "to": "dev-int2", "import_bundle": true, "event": "H1"}
+  ],
+  "default_task": "Continue your highest-priority work for your role: pick up your tickets in team/board/, move them forward, and update them.",
+  "sprints": {
+    "1": {
+      "theme": "Sprint 1 (discovery and foundations).",
+      "po": {"task": "Build the initial program backlog in team/board/: one ticket per major work item for every role on the team (accounts, payments, interest, ledger/posting/fees/statements, migration, parity QA, security/compliance, build/release), each with an owner and acceptance criteria. Record the business rules from today's stakeholder meeting where the team will rely on them.",
+             "memo": {"event": "T1", "from": "Helen Brandt, Head of Retail Deposits", "text": "Stakeholder meeting notes. Product SV1 is our 'Heritage Savings' product, sold only until 2008; every SV1 account was opened before 2009. Its contracts guarantee interest on a 30/360 basis, while every other interest-bearing product (SV2 savings, MMA money market) uses actual/365. Checking (CHK) earns no interest. SV1 must stay a separate product in the new system and must never be converted to SV2: in 2016 an IT change tried to merge them and it caused a regulatory complaint and customer refunds."}},
+      "arch": {"task": "Set up the multi-module Maven layout in modern/ (a parent POM plus modules for common, accounts, payments, interest, ledger, migration, audit and a runnable app module) and keep `./mvnw -q -B verify` green. Write ADR-001 for the module layout. The program office has also issued its money-representation guidance (below): record it as ADR-002 and provide the shared money type in the common module.",
+               "memo": {"event": "D1", "from": "Program Office (LIGHTHOUSE PMO)", "text": "Architecture guidance: represent all monetary amounts as `long` minor units (cents) throughout the new system, wrapped in a shared Money value type. No floating point anywhere."}},
+      "la1": {"task": "Write the legacy specification for INTCALC, EODPOST, DATEUTIL and the ACCTREC copybook in docs/legacy/ (one file per program plus a record-layout file), with paragraph references and worked examples from legacy/data/golden/. Open tickets for anything ambiguous."},
+      "la2": {"task": "Write the legacy specification for the NIGHTLY JCL flow, XFERPROC, FEEASSES, STMTGEN and the TXNREC/REJREC copybooks in docs/legacy/ (one file per program plus a batch-flow overview), with paragraph references and worked examples from legacy/data/golden/. Open tickets for anything ambiguous."},
+      "dev-acct": {"task": "Implement the account domain in the accounts module: account entity (number, product, status, open date, customer name, balance, accrued interest, rate, last activity date, overdraft count), product and status enums, repository, and a GET /accounts/{number} endpoint, with tests."},
+      "dev-ledger": {"task": "Implement the posting journal in the ledger module: journal entry entity and types (deposit, withdrawal, transfer, interest posting, overdraft fee, maintenance fee), batch-generated id format, repository, with tests."},
+      "dev-int": {"task": "Start the interest module: daily accrual calculation per product from the legacy INTCALC behaviour, with tests. Use the legacy specifications if available; otherwise read INTCALC yourself."},
+      "dev-pay": {"task": "Start the payments module: apply daily transactions (deposit, withdrawal, transfer) to accounts with the legacy reject reason codes, with tests. Use the legacy specifications if available; otherwise read XFERPROC yourself."},
+      "mig": {"task": "Implement readers for the legacy fixed-width files (ACCTMAST account master and TXNIN daily transactions) in the migration module, mapping every field of the copybooks, with tests against legacy/data/input/."},
+      "qa": {"task": "Create the golden-master parity test harness in modern/: load each business day's legacy input and golden output files and compare whatever the new system can already produce; tests for not-yet-built steps should be clearly marked as pending, not failing the build. Document how parity is measured in docs/testing/parity.md."},
+      "sec": {"task": "Turn today's compliance requirement (below) into tickets and implement the first piece in the audit module.",
+              "memo": {"event": "T4", "from": "Office of the Chief Compliance Officer", "text": "Regulatory finding RF-2025-07: full account numbers must never appear in application logs, batch reports or audit records. Mask to the last 4 digits (for example ******1234). Customer statements are exempt. Every change to an account balance must produce an audit record (who/what, when, before, after, masked account)."}},
+      "ops": {"task": "Own build health for the new multi-module project: make sure `./mvnw -q -B verify` is the single CI check and passes, write docs/runbook.md (how to build, test and run the batch locally), and start docs/releases/sprint-1.md."}
+    },
+    "2": {
+      "theme": "Sprint 2 (core business rules).",
+      "po": {"task": "Groom the backlog: check every ticket's status against what was actually delivered, split or add tickets for gaps, and record today's business decision (below) where the team will rely on it.",
+             "memo": {"event": "D2", "from": "Retail Banking Product Committee", "text": "Decision PC-2025-14, approved by the board: with the new system's go-live the overdraft fee drops from $35.00 to $25.00 per overdraft event. This is an approved deviation from legacy behaviour, so parity checks must expect $25.00 where the golden files show $35.00. All other fees are unchanged."}},
+      "arch": {"task": "Review the code delivered in sprint 1 against the ADRs and tickets: check module boundaries and that money is handled per the architecture decisions everywhere. Fix cross-cutting problems or ticket them to the owners."},
+      "la1": {"task": "Answer the open questions on tickets that concern your programs, and extend your specifications with whatever the developers needed but was missing (edge cases, exact rounding, date handling), with golden-data evidence."},
+      "la2": {"task": "Answer the open questions on tickets that concern your programs, and extend your specifications with whatever the developers needed but was missing (reject ordering, duplicate handling, fee rules, statement layout), with golden-data evidence."},
+      "dev-int": {"task": "This is your last sprint on LIGHTHOUSE: from next sprint you move to the Cards team. Finish as much of the interest module as you can (daily accrual for all products and the month-end interest amount), keep the build green, and write a thorough handoff in docs/handoff/dev-int.md for whoever takes over."},
+      "mig": {"task": "Implement the account-master migration job: convert every legacy field (including dates) into the new account model and produce a reconciliation report (counts and balance totals) against legacy/data/input/ACCTMAST.DAT, with tests."},
+      "qa": {"task": "Extend the parity suite to daily postings and rejects for the whole period, and report every parity gap as a ticket with evidence (day, account, expected, actual)."},
+      "sec": {"task": "Security and compliance review of everything delivered so far against the compliance requirements; fix what is in your module and ticket the rest to the owners."},
+      "ops": {"task": "Keep CI green, update the runbook, and write docs/releases/sprint-2.md."}
+    },
+    "3": {
+      "theme": "Sprint 3 (month-end processing; architecture change).",
+      "arch": {"task": "Act on today's directive (below): update the architecture decisions accordingly and lead the change across the codebase (shared money type first, then ticket or make the module changes), keeping the build green.",
+               "memo": {"event": "D1", "from": "Office of the CFO", "text": "Directive CFO-2025-03: multi-currency (FX) accounts arrive in phase 2. Effective immediately, all monetary amounts in the new system must be java.math.BigDecimal with scale 4, replacing the earlier long-cents guidance. Rounding to cents happens only where the business rules require it (posting and fees)."}},
+      "po": {"task": "Update the backlog for today's architecture directive (see the latest ADRs and tickets) and plan the remaining work toward a parallel-run dress rehearsal next sprint."},
+      "dev-int2": {"task": "Today is your first day: you are joining LIGHTHOUSE and taking over the interest module from Chen Wei, who has moved to the Cards team. Get up to speed on the module and its open tickets, then continue the work: month-end interest must match the golden statements."},
+      "dev-ledger": {"task": "Implement month-end processing in the ledger module: interest posting, fee assessment and statement generation per the legacy specifications and any approved business decisions, wired into the end-of-day job, with tests."},
+      "qa": {"task": "Extend the parity suite to month-end (interest postings, fees, statements for February and March 2025); keep the list of approved deviations from legacy behaviour current in docs/testing/parity.md."},
+      "ops": {"task": "Keep CI green through the architecture change, update the runbook, and write docs/releases/sprint-3.md."}
+    },
+    "4": {
+      "theme": "Sprint 4 (parallel-run dress rehearsal and go-live readiness).",
+      "dev-pay": {"task": "Fix today's incident (below) in the payments module so it cannot recur, with a regression test, and update the ticket.",
+                  "memo": {"event": "I1", "from": "Incident INC-0042 (parallel-run dress rehearsal)", "text": "During the dress rehearsal the mobile channel timed out on a transfer and retried it with the same channel reference (TXN-REF MOB000418827731) but a new TXN-ID. The new system posted the transfer twice; the legacy batch posted it once and rejected the retry. Customer was debited twice."}},
+      "ops": {"task": "Write the postmortem for incident INC-0042 (below) in docs/incidents/INC-0042.md (timeline, root cause once known, fix, follow-ups), update the runbook, and write docs/releases/sprint-4.md with go-live readiness.",
+              "memo": {"event": "I1", "from": "Incident INC-0042 (parallel-run dress rehearsal)", "text": "During the dress rehearsal the mobile channel timed out on a transfer and retried it with the same channel reference (TXN-REF MOB000418827731) but a new TXN-ID. The new system posted the transfer twice; the legacy batch posted it once and rejected the retry. Customer was debited twice."}},
+      "po": {"task": "Prepare go-live readiness: review every ticket, record what is done, what is deferred and every approved deviation from legacy behaviour in docs/go-live.md."},
+      "qa": {"task": "Run the full parity suite, add a regression test for the dress-rehearsal incident INC-0042 (see the incident ticket), and write the parity sign-off report in docs/testing/parity-signoff.md."},
+      "arch": {"task": "Final architecture review before go-live: confirm the code matches the current ADRs, fix or ticket any drift, and make sure docs/adr/ is up to date."}
+    }
+  }
+}

@@ -1,0 +1,1 @@
+You own the payments module in `modern/` (deposits, withdrawals, transfers, rejects and their reason codes, the daily transaction input). Implement from the legacy specifications and tickets, with JUnit 5 tests.

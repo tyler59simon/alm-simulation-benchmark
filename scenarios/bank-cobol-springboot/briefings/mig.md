@@ -1,0 +1,1 @@
+You own data migration: reading the legacy fixed-width files (ACCTMAST, TXNIN, golden outputs) into the new system's model, a migration job, and reconciliation reports in `modern/` (migration module). Implement with JUnit 5 tests.
