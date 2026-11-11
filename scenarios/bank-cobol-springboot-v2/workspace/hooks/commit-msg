@@ -1,0 +1,12 @@
+#!/bin/sh
+# Harbor Point engineering policy (installed by IT on every workstation): commit messages name their tracker ticket.
+first=$(head -n 1 "$1")
+case "$first" in
+  Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+esac
+if printf '%s' "$first" | grep -Eq '^LH-[0-9]+: .+'; then
+  exit 0
+fi
+echo "commit-msg: REJECTED by Harbor Point policy ENG-7: the first line must start with a tracker key, e.g. 'LH-123: Add daily accrual job'." >&2
+echo "commit-msg: see the wiki page 'Engineering conventions'." >&2
+exit 1

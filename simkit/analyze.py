@@ -213,7 +213,101 @@ def quiz_metrics(run, per_store, mode='memory'):
 
 
 # ---------- mistakes, pointers, latency ----------
-WORK_KEY = re.compile(r'^s\d+/')
+WORK_KEY = re.compile(r'^s\d+(d\d+)?/')
+
+
+def _tool_results(path):
+    """Text of every tool result in a transcript."""
+    out = []
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        msg = ev.get('message') if isinstance(ev, dict) else None
+        content = msg.get('content') if isinstance(msg, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if isinstance(c, dict) and c.get('type') == 'tool_result':
+                t = c.get('content')
+                out.append(t if isinstance(t, str) else json.dumps(t))
+    return out
+
+
+def result_mistake(run, mk, sess):
+    """A trap the environment reports (e.g. a rejected commit). The first session that hits it teaches the agent;
+    every later session that hits it again is a repeat: knowledge that did not carry across sessions."""
+    pat = re.compile(mk['pattern'])
+    per = defaultdict(lambda: {'sessions_hit': 0, 'hits': 0, 'repeat_sessions': 0, 'first': None})
+    for r in sess:
+        t = run.transcripts / f"{r['key']}.jsonl"
+        if not t.exists():
+            continue
+        n = sum(1 for text in _tool_results(t) if pat.search(text))
+        if n:
+            a = per[r['agent']]
+            a['hits'] += n
+            a['sessions_hit'] += 1
+            if a['first'] is None:
+                a['first'] = r['key']
+            else:
+                a['repeat_sessions'] += 1
+    return {'desc': mk['desc'], 'kind': 'result', 'per_agent': dict(per), 'agents_hit': len(per),
+            'repeat_sessions': sum(v['repeat_sessions'] for v in per.values()),
+            'total': sum(v['hits'] for v in per.values())}
+
+
+def lint_mistake(run, mk):
+    """CI lint violations of one rule, by author (git blame). A violation an author introduces after the CI bot already
+    showed them that rule is a repeat."""
+    per = defaultdict(lambda: {'violations': 0, 'repeats': 0, 'told_at': None})
+    seen = set()
+    for i, row in enumerate(read_jsonl(run.dir / 'ci.jsonl')):
+        authors_now = set()
+        for v in row.get('lint') or []:
+            if v.get('rule') != mk['rule']:
+                continue
+            k = (v.get('author'), v['file'], v['text'])
+            authors_now.add(v.get('author'))
+            if k in seen:
+                continue
+            seen.add(k)
+            a = per[v.get('author') or '?']
+            a['violations'] += 1
+            if a['told_at'] is not None and a['told_at'] < i:
+                a['repeats'] += 1
+        for au in authors_now:
+            if per[au or '?']['told_at'] is None:
+                per[au or '?']['told_at'] = i
+    return {'desc': mk['desc'], 'kind': 'lint', 'per_agent': dict(per), 'agents_hit': len(per),
+            'repeats': sum(v['repeats'] for v in per.values()), 'total': sum(v['violations'] for v in per.values())}
+
+
+def probe_metrics(run):
+    rows = [read_json(p) for p in sorted((run.dir / 'probes').glob('*.json'))] if (run.dir / 'probes').exists() else []
+    rows = [r for r in rows if r]
+    scored = [r['score'] for r in rows if r.get('score') is not None]
+    return {'probes': len(rows), 'mean_score': round(sum(scored) / len(scored), 3) if scored else None,
+            'by_probe': {r['id']: r.get('score') for r in rows},
+            'cost_usd': round(sum(r.get('cost_usd') or 0 for r in rows), 4),
+            'mean_turns': round(sum(r.get('turns') or 0 for r in rows) / len(rows), 1) if rows else None,
+            'mean_tool_calls': round(sum(r.get('tool_calls') or 0 for r in rows) / len(rows), 1) if rows else None,
+            'mean_seconds': round(sum(r.get('seconds') or 0 for r in rows) / len(rows), 1) if rows else None}
+
+
+def efficiency(run):
+    """Mean cost, turns, tool calls and seconds per session, by kind of session."""
+    kinds = {'work': WORK_KEY, 'quiz_memory': re.compile(r'^quiz/'), 'quiz_repo': re.compile(r'^quiz-repo/')}
+    out = {}
+    sess = list(run.state()['sessions'].values())
+    for name, rx in kinds.items():
+        rows = [r for r in sess if rx.match(r['key']) and not r['key'].endswith('.resolve')]
+        if rows:
+            out[name] = {k: round(sum((r.get(f) or 0) for r in rows) / len(rows), 4 if k == 'cost_usd' else 1)
+                         for k, f in (('cost_usd', 'cost_usd'), ('turns', 'turns'), ('tool_calls', 'tool_calls'), ('seconds', 'seconds'))}
+            out[name]['sessions'] = len(rows)
+    chat = [r for r in read_jsonl(run.dir / 'costs.jsonl') if str(r.get('key', '')).startswith('chat/')]
+    out['chat'] = {'messages': len(chat), 'cost_usd': round(sum(r.get('cost_usd') or 0 for r in chat), 4)}
+    return out
 
 
 def live_scenario(run, name):
@@ -244,6 +338,12 @@ def mistake_metrics(run):
     sess = sorted((r for r in run.state()['sessions'].values() if WORK_KEY.match(r['key'])), key=lambda r: r['started'])
     out = {}
     for mk in spec.get('mistakes', []):
+        if mk.get('kind') == 'result':
+            out[mk['id']] = result_mistake(run, mk, sess)
+            continue
+        if mk.get('kind') == 'lint':
+            out[mk['id']] = lint_mistake(run, mk)
+            continue
         pat, note_pat = re.compile(mk['pattern']), re.compile(mk['note_pattern'])
         captured = {}
         for store in run.stores.glob('*'):
@@ -346,6 +446,8 @@ def analyze(run):
         'handovers': read_jsonl(run.dir / 'handovers.jsonl'), 'app': app_checks(run),
         'options': run.options, 'quiz': quiz_metrics(run, per_store), 'quiz_repo': quiz_metrics(run, per_store, 'repo'),
         'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
+        'probes': probe_metrics(run), 'efficiency': efficiency(run),
+        'grader_audit': {k: v for k, v in (read_json(run.dir / 'quiz' / 'grader-audit.json') or {}).items() if k != 'rows'} or None,
         'currency': {'updates': sum(s['usage'].get('update', 0) for s in per_store.values()),
                      'supersedes': sum(s['by_status'].get('superseded', 0) for s in per_store.values())}}
     write_json(run.dir / 'metrics.json', metrics)
@@ -368,8 +470,28 @@ def summary(m):
     if qr:
         lines.append(f"quiz (with repo): all {qr['score_all']}, should-know {qr['score_should_know']}")
     for mid, mk in (m.get('mistakes') or {}).items():
-        lines.append(f"mistake {mid}: {mk['total']} times, {mk['repeats_after_capture']} after the agent's own note "
-                     f"(notes in {sorted(mk['captured_by'])})")
+        if mk.get('kind') == 'result':
+            lines.append(f"mistake {mid} ({mk['desc'][:50]}): {mk['total']} hits by {mk['agents_hit']} agents, "
+                         f"{mk['repeat_sessions']} repeat sessions after the first")
+        elif mk.get('kind') == 'lint':
+            lines.append(f"mistake {mid} ({mk['desc'][:50]}): {mk['total']} violations by {mk['agents_hit']} authors, "
+                         f"{mk['repeats']} after the CI bot had told them")
+        else:
+            lines.append(f"mistake {mid}: {mk['total']} times, {mk['repeats_after_capture']} after the agent's own note "
+                         f"(notes in {sorted(mk['captured_by'])})")
+    pr = m.get('probes') or {}
+    if pr.get('probes'):
+        lines.append(f"probes: mean {pr['mean_score']} over {pr['probes']} ({pr['by_probe']}); per probe {pr['mean_turns']} turns, "
+                     f"{pr['mean_tool_calls']} tool calls, {pr['mean_seconds']}s; ${pr['cost_usd']} total")
+    for k, e in (m.get('efficiency') or {}).items():
+        if k != 'chat':
+            lines.append(f"efficiency {k}: {e['sessions']} sessions, ${e['cost_usd']}/session, {e['turns']} turns, "
+                         f"{e['tool_calls']} tool calls, {e['seconds']}s")
+    if (m.get('efficiency') or {}).get('chat', {}).get('messages'):
+        lines.append(f"stakeholder chat: {m['efficiency']['chat']['messages']} messages, ${m['efficiency']['chat']['cost_usd']}")
+    if m.get('grader_audit'):
+        ga = m['grader_audit']
+        lines.append(f"grader audit: agreement {ga['agreement']}, false accept {ga['false_accept_rate']}, false reject {ga['false_reject_rate']}")
     for fid, f in m['facts'].items():
         lines.append(f"  {fid}: in {f['duplication']} stores, should-know coverage {f['should_know_coverage']}, "
                      f"stale-only in {f['stores_with_stale_only']}, quiz {(q.get('by_fact_should_know') or {}).get(fid)}, "
@@ -406,3 +528,41 @@ def compare(a, b):
     out = [f"{'metric'.ljust(width)}  {a['run'][:24]:>24}  {b['run'][:24]:>24}"]
     out += [f"{k.ljust(width)}  {str(x):>24}  {str(y):>24}{'  *' if x != y else ''}" for k, x, y in rows]
     return '\n'.join(out), sum(1 for _, x, y in rows if x != y)
+
+
+# ---------- arms ----------
+ARM_METRICS = (
+    ('probe score', lambda m: (m.get('probes') or {}).get('mean_score')),
+    ('quiz with repo, should-know', lambda m: (m.get('quiz_repo') or {}).get('score_should_know')),
+    ('quiz memory-only, should-know', lambda m: (m.get('quiz') or {}).get('score_should_know')),
+    ('probe turns', lambda m: (m.get('probes') or {}).get('mean_turns')),
+    ('probe tool calls', lambda m: (m.get('probes') or {}).get('mean_tool_calls')),
+    ('probe $', lambda m: (m.get('probes') or {}).get('cost_usd')),
+    ('quiz-repo $/session', lambda m: ((m.get('efficiency') or {}).get('quiz_repo') or {}).get('cost_usd')),
+    ('quiz-repo tool calls', lambda m: ((m.get('efficiency') or {}).get('quiz_repo') or {}).get('tool_calls')),
+    ('work $/session', lambda m: ((m.get('efficiency') or {}).get('work') or {}).get('cost_usd')),
+    ('work turns/session', lambda m: ((m.get('efficiency') or {}).get('work') or {}).get('turns')),
+    ('run total $', lambda m: (m.get('totals') or {}).get('cost_usd')),
+    ('CI green share', lambda m: round(m['ci']['green'] / m['ci']['runs'], 3) if (m.get('ci') or {}).get('runs') else None),
+    ('commit-policy repeat sessions', lambda m: ((m.get('mistakes') or {}).get('M1') or {}).get('repeat_sessions')),
+    ('lint repeats (L1+L2)', lambda m: sum(((m.get('mistakes') or {}).get(k) or {}).get('repeats') or 0 for k in ('M2', 'M3'))),
+    ('stale notes (D1)', lambda m: len(((m.get('facts') or {}).get('D1') or {}).get('stores_with_stale_only') or [])),
+)
+
+
+def compare_arms(arms):
+    """arms: {name: [metrics dicts]} -> a table of mean +- sd (n) per metric and arm."""
+    import statistics as st
+    def cell(vals):
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        if not vals:
+            return '-'
+        mean = st.mean(vals)
+        sd = st.stdev(vals) if len(vals) > 1 else 0.0
+        return f"{mean:.3g} ± {sd:.2g} (n={len(vals)})"
+    names = list(arms)
+    width = max(len(n) for n, _ in ARM_METRICS)
+    out = [f"{'metric'.ljust(width)}  " + '  '.join(n.rjust(22) for n in names)]
+    for label, fn in ARM_METRICS:
+        out.append(f"{label.ljust(width)}  " + '  '.join(cell([fn(m) for m in arms[n]]).rjust(22) for n in names))
+    return '\n'.join(out)

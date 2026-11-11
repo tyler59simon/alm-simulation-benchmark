@@ -20,6 +20,14 @@ def deny_rules(run, agent_id):
     for p in blocked:
         r = rule_path(p)
         rules += [f'Read({r}/**)', f'Edit({r}/**)', f'Write({r}/**)']
+    # The harness's own bookkeeping in the run folder (state, costs, logs: other agents' replies live there).
+    base = rule_path(run.dir)
+    for pat in ('*.json', '*.jsonl', '*.log', '*.out', 'npcroom/**', 'chat/**'):
+        rules += [f'Read({base}/{pat})', f'Edit({base}/{pat})', f'Write({base}/{pat})']
+    if run.workspace_enabled:
+        # Slack DMs are private: an engineer reads only their own threads (team_chat.py reads them on their behalf).
+        chat = rule_path(run.workspace / 'chat')
+        rules += [f'Read({chat}/**)', f'Edit({chat}/**)', f'Write({chat}/**)']
     return rules
 
 
@@ -48,8 +56,16 @@ def parse_transcript(path):
     return info
 
 
+def run_rev(cwd):
+    try:
+        r = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=cwd, capture_output=True, text=True, timeout=30)
+        return r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), settings=None, timeout_min=30,
-           extra_env=None):
+           extra_env=None, system_append=None):
     """Run `claude -p` with the prompt on stdin. Returns the session row (also appended to costs.jsonl/state)."""
     cfg = config()
     out = run.transcripts / f'{key}.jsonl'
@@ -59,18 +75,30 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
             '--max-budget-usd', str(tier.get('budget_usd', 1.0)), '--permission-mode', tier.get('permission_mode', 'acceptEdits')]
     if tier.get('effort'):
         args += ['--effort', tier['effort']]
-    if run.options.get('memory') == 'off':
-        # Control arm: no hooks, so no Living Memory session line; the gated CLAUDE.md protocol block stays inert.
-        settings = {**(settings or {}), 'disableAllHooks': True}
+    memory = run.options.get('memory', 'on')
+    mem_env = {}
+    if memory in ('off', 'builtin'):
+        # No Living Memory hooks, so no session line: the gated CLAUDE.md protocol block stays inert.
+        # off (A0): Claude Code's own auto-memory is off too. builtin (A1): Claude Code as shipped, auto-memory on.
+        settings = {**(settings or {}), 'disableAllHooks': True, 'autoMemoryEnabled': memory == 'builtin'}
+        if memory == 'off':
+            mem_env['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
     if settings:
         args += ['--settings', json.dumps(settings)]
+    if system_append:
+        args += ['--append-system-prompt', system_append]
     if allow:
         args += ['--allowedTools', *allow]
     if deny:
         args += ['--disallowedTools', *deny]
     tc_env, tc_path = run.toolchain_env()
+    sim_env = ({'SIM_RUN': str(run.dir), 'SIM_AGENT': agent['id'], 'SIM_AGENT_NAME': agent.get('name', agent['id']),
+                'SIM_WORKSPACE': str(run.workspace)} if run.workspace_enabled else {})
     env = clean_env({**tc_env, 'LIVING_MEMORY_ROOT': str(store), 'LIVING_MEMORY_LOG_LEVEL': 'debug',
-                     'LIVING_MEMORY_LOG_CONTENT': '1', **(extra_env or {})}, tc_path)
+                     'LIVING_MEMORY_LOG_CONTENT': '1', **sim_env, **(extra_env or {})}, tc_path)
+    env.update(mem_env)   # after clean_env, which strips CLAUDE* variables
+    rev = lambda: run_rev(cwd)   # noqa: E731  the agent's HEAD before and after, so probes can grade what this session committed
+    rev_before = rev()
     t0, started = time.time(), now()
     with open(out, 'w', encoding='utf-8') as fo, open(out.with_suffix('.stderr.txt'), 'w', encoding='utf-8') as fe:
         proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=fo, stderr=fe,
@@ -95,7 +123,8 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
            'timed_out': timed_out, 'subtype': res.get('subtype'), 'is_error': res.get('is_error'),
            'cost_usd': res.get('total_cost_usd'), 'turns': res.get('num_turns'), 'usage': res.get('usage'),
            'session_id': sid, 'session_hash': session_hash(sid) if sid else None,
-           'tool_calls': info['tool_calls'], 'lm_calls': info['lm_calls'], 'final': (res.get('result') or '')[-1500:]}
+           'tool_calls': info['tool_calls'], 'lm_calls': info['lm_calls'], 'final': (res.get('result') or '')[-1500:],
+           'rev_before': rev_before, 'rev_after': rev(), 'memory': memory}
     append_jsonl(run.dir / 'costs.jsonl', {k: row[k] for k in ('key', 'agent', 'model', 'cost_usd', 'seconds', 'session_hash')})
     run.update_state(lambda s: s['sessions'].__setitem__(key, row))
     return row

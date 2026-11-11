@@ -1,6 +1,7 @@
 """Run lifecycle: init, sprints (waves, merges, CI), handovers, quiz, grading, smoke test, isolation check."""
 import hashlib
 import json
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -32,8 +33,8 @@ def init(scenario, label=None, prime=True, memory='on', semantic=False):
     src = SCENARIOS / scenario
     if not (src / 'scenario.json').exists():
         raise SystemExit(f'No scenario {scenario}')
-    if memory not in ('on', 'off'):
-        raise SystemExit("memory must be 'on' or 'off'")
+    if memory not in ('on', 'off', 'builtin'):
+        raise SystemExit("memory must be 'on', 'off' or 'builtin'")
     cfg = config()
     if semantic and not Path(cfg.get('semantic_model_dir') or '').is_dir():
         raise SystemExit(f"semantic: no model folder at {cfg.get('semantic_model_dir')!r} (set semantic_model_dir in simkit/config.json)")
@@ -48,6 +49,8 @@ def init(scenario, label=None, prime=True, memory='on', semantic=False):
         'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic)}, 'finished': None})
     run = Run(path)
     log(run, f'init {path.name}')
+    if run.workspace_enabled:
+        setup_workspace(run)
     gitops.init_repo(run)
     for agent in run.active(1):
         ensure_agent(run, agent)
@@ -101,7 +104,100 @@ def _ci_notice(run):
     return f"CI on main is RED (last run after {last['label']}). Output tail:\n```\n{tail}\n```"
 
 
-def work_prompt(run, agent, sprint, branch):
+# ---------------- v2: short engineer-voice prompts ----------------
+def render(text, run):
+    """Run-specific placeholders in seed and workspace text: {{WORKSPACE}} is this run's company workspace."""
+    return text.replace('{{WORKSPACE}}', run.workspace.as_posix())
+
+
+def setup_workspace(run):
+    """The company's tools outside the repo (tracker, wiki, chat, hooks), copied from the scenario and rendered."""
+    src = run.scenario_dir / run.scenario['workspace']
+    shutil.copytree(src, run.workspace, dirs_exist_ok=True)
+    for p in run.workspace.rglob('*'):
+        if p.is_file() and p.suffix in ('.md', '.html', '.py', '.json', '.txt', '') and p.stat().st_size < 2_000_000:
+            try:
+                t = p.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                continue
+            if '{{WORKSPACE}}' in t:
+                p.write_text(render(t, run), encoding='utf-8', newline='\n')
+    for d in ('chat', 'tracker', 'wiki'):
+        (run.workspace / d).mkdir(parents=True, exist_ok=True)
+
+
+def set_clock(run, sprint, day):
+    write_json(run.workspace / '.clock.json', {'sprint': sprint, 'day': day, 'label': day_label(run, sprint, day)})
+
+
+def day_label(run, sprint, day):
+    return f's{sprint}' if run.days == 1 else f's{sprint}d{day}'
+
+
+def identity(run, agent):
+    """What a personal ~/.claude/CLAUDE.md would tell the assistant about its engineer (appended to the system prompt)."""
+    owns = f" {agent['name'].split()[0]} owns {agent['owns']}." if agent.get('owns') else ''
+    return (f"You are pairing with {agent['name']}, {agent['title']} at Harbor Point Savings & Trust, on Project LIGHTHOUSE.{owns} "
+            f"Their messages to you are their own words; act on them as a capable colleague would.")
+
+
+def absent(run, sprint, day):
+    """{agent: vacation} for engineers out on this day."""
+    return {v['agent']: v for v in run.events.get('vacations', []) if v['sprint'] == sprint and day in v['days']}
+
+
+def first_session(run, agent):
+    return not any(r.get('agent') == agent['id'] and re.match(r'^s\d+(d\d+)?/', k) for k, r in run.state()['sessions'].items())
+
+
+def _ci_bot(run, agent, wave_members):
+    rows = read_jsonl(run.dir / 'ci.jsonl')
+    if not rows or rows[-1].get('ok'):
+        return None
+    last = rows[-1]
+    culprits = {v.get('author') for v in last.get('lint') or []}
+    if not (agent['id'] in culprits or agent.get('ci_watch') or agent['id'] in wave_members):
+        return None
+    tail = '\n'.join((last.get('tail') or [last.get('reason', '')])[-14:])[-1800:]
+    return f"#ci-bot: main is red since {last['label']} ({last.get('main', '')}).\n```\n{tail}\n```"
+
+
+def short_prompt(run, agent, sprint, day, branch, cover=None):
+    ev = run.events
+    plan = ev.get('sprints', {}).get(str(sprint), {}).get(agent['id'], {})
+    probe = next((p for p in run.probes if p['sprint'] == sprint and p['day'] == day and p['agent'] == agent['id']), None)
+    if probe:
+        task = probe['task']
+    elif day == 1 or run.days == 1:
+        task = plan.get('task') or ev.get('default_task', 'What should I pick up next? Check the tracker for my tickets.')
+    else:
+        task = (plan.get('days') or {}).get(str(day))
+        if not task:
+            templates = ev.get('day_templates', {}).get(str(day)) or ev.get('day_templates', {}).get('*') or ['Carry on with {focus}.']
+            task = templates[(sprint + len(agent['id'])) % len(templates)].format(focus=plan.get('focus', 'your tickets'))
+    parts = []
+    if first_session(run, agent):
+        key = 'join_note' if agent.get('joins', 1) > 1 else 'onboarding'
+        parts.append(render(ev.get(key, ''), run).format(name=agent['name'].split()[0], title=agent['title'],
+                                                         owns=agent.get('owns', 'your area')))
+    parts.append(task)
+    for c in cover or []:
+        parts.append(c['note'])
+    for s in plan.get('slack', []):
+        if s.get('day', 1) == day:
+            parts.append(f"FYI, from Slack ({s['channel']}), {s['from']}:\n> " + s['text'].replace('\n', '\n> '))
+    for s in ev.get('broadcast', []):
+        if s['sprint'] == sprint and s.get('day', 1) == day and (not s.get('to') or agent['id'] in s['to']):
+            parts.append(f"FYI, from Slack ({s['channel']}), {s['from']}:\n> " + s['text'].replace('\n', '\n> '))
+    ci = _ci_bot(run, agent, getattr(run, '_last_wave', ()))
+    if ci:
+        parts.append(ci)
+    return '\n\n'.join(p.strip() for p in parts if p and p.strip()) + '\n'
+
+
+def work_prompt(run, agent, sprint, branch, day=1, cover=None):
+    if run.events.get('style') == 'short':
+        return short_prompt(run, agent, sprint, day, branch, cover)
     ev = run.events
     plan = (ev.get('sprints', {}).get(str(sprint), {}))
     item = plan.get(agent['id'], {})
@@ -122,6 +218,10 @@ def work_prompt(run, agent, sprint, branch):
 
 
 def resolve_prompt(run, agent, sprint, files):
+    if run.events.get('style') == 'short':
+        return (f"The release bot couldn't merge my branch into main: conflicts in {', '.join(files) or 'some files'}. "
+                "I've started merging origin/main into the branch here. Can you resolve the conflicts so both my work and the "
+                "team's work survive, make sure it still builds, and commit the merge? Don't push.\n")
     return '\n\n'.join([
         _team_header(run, agent, sprint).strip(), '## Merge conflict',
         f"Release engineering could not merge your branch into main: it conflicts in {', '.join(files) or 'some files'}. "
@@ -170,41 +270,65 @@ def sprint(run, n):
         log(run, f'sprint {n} already done')
         return
     handovers(run, n)
-    active_ids = {a['id'] for a in run.active(n)}
+    for d in range(1, run.days + 1):
+        day(run, n, d)
+    run.mark(f's{n}')
+
+
+def day(run, n, d):
+    """One working day: waves in dependency order, each wave's sessions in parallel, then merges and CI.
+    With one day per sprint the keys and labels are the v1 ones (s1/po, s1/w0)."""
+    tag = day_label(run, n, d)
+    if run.days > 1 and run.done(tag):
+        return
+    if run.workspace_enabled:
+        set_clock(run, n, d)
+    out = absent(run, n, d)
+    covers = {}
+    for aid, v in out.items():
+        covers.setdefault(v['cover'], []).append(v)
+    active_ids = {a['id'] for a in run.active(n)} - set(out)
     agents = run.agents()
     for wi, wave in enumerate(run.scenario['waves']):
-        step = f's{n}/w{wi}'
+        step = f'{tag}/w{wi}'
         members = [agents[i] for i in wave if i in active_ids]
         if run.done(step) or not members:
             continue
         branches = {}
         for a in members:
             ensure_agent(run, a)
-            bstep = f's{n}/{a["id"]}/branch'
-            info = gitops.start_branch(run, a, n) if not run.done(bstep) else {'branch': f"{a['id']}/s{n}"}
+            bstep = f'{tag}/{a["id"]}/branch'
+            label = n if run.days == 1 else tag
+            info = gitops.start_branch(run, a, label) if not run.done(bstep) else {'branch': f"{a['id']}/{tag}"}
             if not run.done(bstep):
-                append_jsonl(run.dir / 'branches.jsonl', {'ts': now(), 'sprint': n, 'agent': a['id'], **info})
+                append_jsonl(run.dir / 'branches.jsonl', {'ts': now(), 'sprint': n, 'day': d, 'agent': a['id'], **info})
                 run.mark(bstep)
             branches[a['id']] = info['branch']
+        system = identity(run, members[0]) if run.events.get('style') == 'short' else None
         with ThreadPoolExecutor(max_workers=run.scenario.get('parallel', 4)) as pool:
-            futures = [pool.submit(_session, run, f's{n}/{a["id"]}', a, work_prompt(run, a, n, branches[a['id']]),
-                                   run.ws / a['id']) for a in members]
+            futures = [pool.submit(_session, run, f'{tag}/{a["id"]}', a,
+                                   work_prompt(run, a, n, branches[a['id']], d, covers.get(a['id'])), run.ws / a['id'],
+                                   **({'system_append': identity(run, a)} if system else {})) for a in members]
             for f in futures:
                 f.result()
         for a in members:
             ok, detail = gitops.merge_agent(run, a, n)
             if not ok:
-                append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'agent': a['id'], 'ok': False, 'attempt': 1, **detail})
+                append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'day': d, 'agent': a['id'], 'ok': False, 'attempt': 1, **detail})
                 if gitops.prepare_conflict(run, a):
-                    _session(run, f's{n}/{a["id"]}.resolve', a, resolve_prompt(run, a, n, detail.get('conflicts', [])), run.ws / a['id'])
+                    _session(run, f'{tag}/{a["id"]}.resolve', a, resolve_prompt(run, a, n, detail.get('conflicts', [])), run.ws / a['id'],
+                             **({'system_append': identity(run, a)} if system else {}))
                 ok, detail = gitops.merge_agent(run, a, n)
                 detail['attempt'] = 2
-            append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'agent': a['id'], 'ok': ok, **detail})
-            log(run, f'merge {a["id"]} s{n}: {"ok" if ok else "FAILED"} {detail}')
-        row = gitops.run_ci(run, f's{n}/w{wi}')
-        log(run, f'CI after s{n}/w{wi}: {"green" if row and row["ok"] else "RED"} ({row and row["seconds"]}s)')
+            append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'day': d, 'label': tag, 'agent': a['id'], 'ok': ok, **detail})
+            log(run, f'merge {a["id"]} {tag}: {"ok" if ok else "FAILED"} {detail}')
+        row = gitops.run_ci(run, step)
+        run._last_wave = {a['id'] for a in members}
+        log(run, f'CI after {step}: {"green" if row and row["ok"] else "RED"} ({row and row["seconds"]}s)'
+                 + (f" lint={len(row['lint'])}" if row and row.get('lint') else ''))
         run.mark(step)
-    run.mark(f's{n}')
+    if run.days > 1:
+        run.mark(tag)
 
 
 def run_all(run, through=None):
@@ -257,26 +381,29 @@ def quiz(run, mode='memory'):
     if mode not in QUIZ_MODES:
         raise SystemExit(f'quiz mode must be one of {QUIZ_MODES}')
     q = run.quiz
-    intro = q['intro'] if mode == 'memory' else REPO_INTRO
+    intro = q['intro'] if mode == 'memory' else q.get('intro_repo', REPO_INTRO)
     body = intro + '\n\n' + '\n'.join(f"{x['id']}. {x['text']}" for x in q['questions'])
     body += ('\n\nWhen you are done, reply with only a JSON object of the form '
              '{"answers": [{"id": "q1", "answer": "..."}, ...]} covering every question.')
     for agent in run.scenario['roster']:
         if not (run.stores / agent['id']).exists():
             continue
-        header = f"You are {agent['name']}, {agent['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust."
+        short = run.events.get('style') == 'short'
+        # v2: the engineer is speaking (identity in the system prompt, like a personal CLAUDE.md); v1: a role header.
+        who = {'system_append': identity(run, agent)} if short else {}
+        header = '' if short else f"You are {agent['name']}, {agent['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust.\n\n"
         key = f'quiz/{agent["id"]}' if mode == 'memory' else f'quiz-{mode}/{agent["id"]}'
         if mode == 'memory':
             room = run.dir / 'quizroom' / agent['id']
             stores.bind(run.stores / agent['id'], run.scenario['domain'], room)
-            row = _session(run, key, agent, header + '\n\n' + body, room, allow=[],
-                           deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']))
+            row = _session(run, key, agent, header + body, room, allow=[],
+                           deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']), **who)
         else:
             if not (run.state()['sessions'].get(key) or {}).get('ended'):
                 gitops.autocommit(run.ws / agent['id'], agent['id'])
                 gitops.git(run.ws / agent['id'], 'fetch', '-q', 'origin')
                 gitops.git(run.ws / agent['id'], 'checkout', '-q', '-B', f"{agent['id']}/quiz", 'origin/main')
-            row = _session(run, key, agent, header + '\n\n' + body, run.ws / agent['id'])
+            row = _session(run, key, agent, header + body, run.ws / agent['id'], **who)
         answers = _last_json(full_final(run, key, row)) or {}
         write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **answers})
     run.mark('quiz' if mode == 'memory' else f'quiz-{mode}')

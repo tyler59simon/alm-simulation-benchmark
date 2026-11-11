@@ -1,0 +1,8 @@
+<html><head><title>Mainframe Ops : Nightly batch overview</title></head><body>
+<h1>HPNIGHT nightly batch</h1>
+<p><em>Exported from Confluence (Mainframe Ops space). Author: P. Quinn. Last updated 2019-08-02.</em></p>
+<p>The nightly job runs every calendar day. Steps: XFERPROC (apply the day's transactions), INTCALC (daily interest accrual),
+then on the last day of the month EODPOST (interest posting), FEEASSES (fees) and STMTGEN (statements).</p>
+<p>Restart: rerun from the failed step with the previous generation of the master file.</p>
+<p>Known quirks: see the program change logs. Ask Pat if in doubt.</p>
+</body></html>

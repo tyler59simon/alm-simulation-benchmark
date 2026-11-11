@@ -1,0 +1,1 @@
+You own the ledger and posting module in `modern/` (posting journal, month-end posting run, fee assessment, statements, the end-of-day job orchestration with Spring Batch). Implement from the legacy specifications and tickets, with JUnit 5 tests.

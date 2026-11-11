@@ -41,6 +41,34 @@ python sim.py compare RUN_A RUN_B
 ```
 Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are long (hours), so start `run` in the background. Every step is resumable: re-running a command skips the sessions and steps that already finished.
 
+## Scenario v2 (realistic) and evaluation arms
+`scenarios/bank-cobol-springboot-v2` follows what published agent benchmarks found mattered for realism: TheAgentCompany (a company's tools outside the repo, plus simulated colleagues), MemoryCode (knowledge applied without being asked to recall it), MemoryAgentBench (facts that change), SWE-ContextBench (cost and time, not just accuracy), τ-bench (repeated runs) and the LoCoMo critiques (deterministic checks where possible, and an audited judge).
+
+**How the scenario works:**
+- **Short prompts in the engineer's voice:** an onboarding prompt on day 1 and for joiners, then task prompts such as "pick up LH-20". The engineer's identity goes in an appended system prompt, the way a personal `CLAUDE.md` would carry it.
+- **Conventions live in the repo `CLAUDE.md`,** which points to the wiki.
+- **Tools outside the repo (`runs/<run>/workspace`):**
+  - `tracker/` (Jira-like, `bin/tracker.py` allocates unique keys);
+  - `wiki/` (Confluence-like, including stale HTML exports);
+  - `chat/` (Slack DMs through `bin/team_chat.py`, with business colleagues played by Haiku from `npcs.json`; only the current sprint is visible);
+  - `hooks/` (company git hooks, installed via `core.hooksPath`).
+- **Natural traps:** a commit-msg hook (policy ENG-7, a ticket key on the first line) and CI-only lint rules (`scenario.json` `lint`, reported in a `#ci-bot` message when main goes red).
+- **Facts change twice** (the overdraft fee, money type, ownership). There are two handovers and a vacation with cover. Each sprint has 3 working days.
+- **Work probes** (`probes.json`) in sprint 4: ordinary requests that silently need earlier knowledge. `sim.py probes` grades them with regex checks plus an LLM judge.
+- **Grader audit:** `sim.py grade-audit` measures the judge's false-accept and false-reject rates on `grader_calibration.json`.
+
+**Arms** (`init --memory ...`):
+
+| Arm | Flag | What it is |
+|---|---|---|
+| A0 | `off` | No memory at all: hooks disabled and Claude Code auto-memory disabled. |
+| A1 | `builtin` | Claude Code as shipped: auto-memory on, no Living Memory. |
+| C | `on` | Living Memory as installed. |
+
+**Commands:**
+- `sim.py pipeline SCENARIO --memory M --label L` runs one arm end to end and is resumable with `--run`.
+- `sim.py compare-arms A0=r1,r2,r3 A1=... C=...` prints mean ± sd per metric across seeds: probe score, the quiz with and without repo access, efficiency (turns, tool calls, $ per session), CI share, repeated mistakes and stale notes.
+
 ## Isolation guarantees
 - Each child gets `LIVING_MEMORY_ROOT=<its store>` and debug or content logging, and the store is marked `sandbox.json`. Inherited `CLAUDE*` and `LIVING_MEMORY*` variables are stripped.
 - `verify-isolation` searches the real store's logs and notes for every session hash of the run (`sha256(session_id)[:12]`, the same digest LM uses). It also checks that each store's logs contain only its own agent's sessions.

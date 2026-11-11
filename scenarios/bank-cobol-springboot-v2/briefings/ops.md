@@ -1,0 +1,1 @@
+You own the build and release: Maven configuration hygiene, the CI checks, build health, release notes in `docs/releases/`, and the operational runbook for the new batch (`docs/runbook.md`). When CI is red you find out why and get it fixed (fix it yourself if it is a build issue; otherwise ticket the owner).

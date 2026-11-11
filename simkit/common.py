@@ -135,14 +135,18 @@ class Run:
         self.dir = Path(path).resolve()
         self.manifest = read_json(self.dir / 'manifest.json', {})
         self.options = {'memory': 'on', 'semantic': False, **(self.manifest.get('options') or {})}
+        self.workspace = self.dir / 'workspace'   # the company's tools outside the repo: tracker, wiki, chat, hooks
         self.scenario_dir = self.dir / 'scenario'
         self.scenario = read_json(self.scenario_dir / 'scenario.json')
         self.events = read_json(self.scenario_dir / self.scenario.get('events', 'events.json'), {})
         self.truth = read_json(self.scenario_dir / self.scenario.get('ground_truth', 'ground_truth.json'), {})
         self.quiz = read_json(self.scenario_dir / self.scenario.get('quiz', 'quiz.json'), {})
+        self.probes = (read_json(self.scenario_dir / self.scenario['probes'], {}) or {}).get('probes', []) if self.scenario.get('probes') else []
         self.origin, self.integration = self.dir / 'origin.git', self.dir / 'integration'
         self.ws, self.stores, self.transcripts = self.dir / 'ws', self.dir / 'stores', self.dir / 'transcripts'
         self.state_path = self.dir / 'state.json'
+        self.workspace_enabled = bool(self.scenario.get('workspace'))
+        self.days = int(self.scenario.get('days_per_sprint', 1))
 
     # ---- roster ----
     def agents(self):

@@ -1,0 +1,63 @@
+{
+  "note": "Colleagues outside the engineering team, reachable only through team_chat.py. Each 'knows' line is hidden from engineers until they ask; ground_truth.json names which facts come from whom.",
+  "people": [
+    {
+      "name": "Helen Brandt", "handle": "hbrandt", "role": "Head of Retail Deposits (business owner of savings products)",
+      "style": "Warm, precise about contracts, slightly impatient with IT jargon.",
+      "knows": [
+        "SV1 is Heritage Savings, sold only until 2008; every SV1 account was opened before 2009.",
+        "Heritage Savings contracts guarantee interest on a 30/360 day count: the 31st of a month accrues nothing, and the last day of February accrues up to day 30 (3 days in a 28-day February). Every other interest-bearing product (SV2 savings, MMA money market) is actual/365, and the bank uses 365 even in leap years.",
+        "Checking (CHK) earns no interest.",
+        "SV1 must stay its own product and must never be converted to SV2. In 2016 an IT change tried to merge them; it caused a regulatory complaint and customer refunds.",
+        "Next quarter the bank launches 'Heritage Plus', product code SV3, for loyal Heritage customers. It keeps exactly the Heritage contract terms (30/360), with a different rate table.",
+        "Maintenance fee policy is unchanged from legacy: checking accounts below $500.00 at month end pay $5.00."
+      ]
+    },
+    {
+      "name": "Owen Achterberg", "handle": "oachterberg", "role": "Secretary of the Retail Banking Product Committee",
+      "style": "Formal; quotes decision numbers.",
+      "knows": [
+        "Decision PC-2025-14 (board approved): with the new system the overdraft fee drops from $35.00 to $25.00 per overdraft event. It is an approved deviation from legacy.",
+        "Decision PC-2025-21 (approved in sprint 4 of LIGHTHOUSE, effective with go-live): overdraft fees are capped at 3 per statement month, so the most a customer pays in overdraft fees in one month is $75.00. It amends PC-2025-14.",
+        "These two are the only approved deviations from legacy behaviour; everything else must match the legacy batch."
+      ]
+    },
+    {
+      "name": "Mei Lin", "handle": "mlin", "role": "Compliance Officer (Office of the CCO)",
+      "style": "Exact, cites findings; firm about scope.",
+      "knows": [
+        "Regulatory finding RF-2025-07: full account numbers must never appear in application logs, batch reports or audit records; mask to the last 4 digits (for example ******1234).",
+        "Customer statements are exempt from masking; anything else that leaves the bank (exports, partner files) is not exempt.",
+        "Every change to an account balance needs an audit record: who or what, when, before, after, and the masked account."
+      ]
+    },
+    {
+      "name": "Daniel Okoro", "handle": "dokoro", "role": "Finance architecture lead, Office of the CFO",
+      "style": "Direct, thinks in currencies.",
+      "knows": [
+        "In sprint 1 the program office told engineering to use long minor units (cents). That guidance was replaced in sprint 3 by directive CFO-2025-03: every monetary amount is java.math.BigDecimal with scale 4, because multi-currency FX accounts arrive in phase 2.",
+        "Rounding to cents happens only where business rules require it: interest posting and fees.",
+        "The phase-2 FX partner API will exchange amounts as decimal strings with 4 fractional digits."
+      ]
+    },
+    {
+      "name": "Carla Mendes", "handle": "cmendes", "role": "Mobile and web channel lead",
+      "style": "Practical, talks about retries and timeouts.",
+      "knows": [
+        "The mobile app retries a transfer after a 10-second timeout, up to 3 times within 2 minutes, reusing the same channel reference (TXN-REF) with a new TXN-ID.",
+        "Starting next month the branch teller channel will also send TXN-REFs, and it retries deposits the same way.",
+        "A reference reused on a later business day is a genuine new request from the customer, not a retry."
+      ]
+    },
+    {
+      "name": "Pat Quinn", "handle": "pquinn", "role": "Mainframe operations consultant (ran the nightly batch for 20 years, part-time now)",
+      "style": "Chatty, full of war stories, but accurate.",
+      "knows": [
+        "The nightly batch runs every calendar day including weekends and holidays.",
+        "Legacy dates are Julian YYDDD with a century window in DATEUTIL: YY below 70 means 20YY, otherwise 19YY. A handful of accounts really opened in 1968 and 1969 show as 2068 and 2069; the business decided years ago to leave them as they are, and the new system must reproduce legacy, not fix them silently.",
+        "XFERPROC has a 'channel retry guard': a non-blank TXN-REF already posted earlier the same business day is rejected with reason DUP; rejected transactions don't count, and a reference on a new day posts normally.",
+        "Interest accrues daily truncated to 6 decimals and is posted at month end with banker's rounding (round half to even) to cents."
+      ]
+    }
+  ]
+}

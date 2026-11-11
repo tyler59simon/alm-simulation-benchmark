@@ -1,0 +1,4 @@
+{"lint": [
+  {"id": "L1", "desc": "no System.out/System.err printing in production code; use the logger", "glob": "modern/**/src/main/java/**/*.java", "pattern": "System\\.(out|err)\\.print"},
+  {"id": "L2", "desc": "TODO/FIXME must name its ticket, e.g. TODO(LH-123)", "glob": "modern/**/*.java", "pattern": "\\b(TODO|FIXME)\\b(?!\\(LH-\\d+\\))"}
+]}

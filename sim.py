@@ -30,8 +30,15 @@ def main(argv=None):
     sub = p.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('smoke'); s.add_argument('scenario')
     s = sub.add_parser('init'); s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--no-prime', action='store_true')
-    s.add_argument('--memory', choices=['on', 'off'], default='on', help='off: the control arm, every hook disabled')
+    s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on',
+                   help="off: no memory at all (A0); builtin: Claude Code's own auto-memory only (A1); on: Living Memory")
     s.add_argument('--semantic', action='store_true', help='install the embedding model into every store')
+    s = sub.add_parser('pipeline', help='init + all sprints + quizzes + grading + probes + grader audit + analysis, resumable')
+    s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on')
+    s.add_argument('--semantic', action='store_true'); s.add_argument('--run', help='resume this run instead of creating one')
+    for name in ('probes', 'grade-audit'):
+        sub.add_parser(name).add_argument('--run')
+    s = sub.add_parser('compare-arms', help='mean ± sd per arm: NAME=RUN[,RUN...] ...'); s.add_argument('arms', nargs='+')
     s = sub.add_parser('sprint'); s.add_argument('n', type=int); s.add_argument('--run')
     s = sub.add_parser('run'); s.add_argument('--run'); s.add_argument('--through', type=int)
     for name in ('quiz', 'grade'):
@@ -59,6 +66,38 @@ def main(argv=None):
         engine.grade(get(), a.mode)
     elif a.cmd == 'analyze':
         print(analyze.summary(analyze.analyze(get())))
+    elif a.cmd == 'pipeline':
+        from simkit import probes
+        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic)
+        print(run.dir.name, flush=True)
+        try:
+            engine.run_all(run)
+        except engine.SpendLimit as e:
+            log(run, f'STOPPED: {e}')
+            return 3
+        modes = ['repo'] if run.options.get('memory') in ('off', 'builtin') else ['repo', 'memory']
+        for mode in modes:
+            engine.quiz(run, mode)
+            engine.grade(run, mode)
+        if run.probes:
+            probes.grade_probes(run)
+        probes.grade_audit(run)
+        print(analyze.summary(analyze.analyze(run)))
+        iso = engine.isolation(run)
+        log(run, f"isolation: {'ok' if iso['ok'] else 'FAILED ' + json.dumps(iso)[:400]}")
+        engine.finish(run)
+    elif a.cmd == 'probes':
+        from simkit import probes
+        print(json.dumps([{k: r.get(k) for k in ('id', 'score')} for r in probes.grade_probes(get())]))
+    elif a.cmd == 'grade-audit':
+        from simkit import probes
+        print(json.dumps({k: v for k, v in (probes.grade_audit(get()) or {}).items() if k != 'rows'}, indent=2))
+    elif a.cmd == 'compare-arms':
+        arms = {}
+        for spec in a.arms:
+            name, _, runs = spec.partition('=')
+            arms[name] = [read_json(resolve_run(r).dir / 'metrics.json') for r in runs.split(',') if r]
+        print(analyze.compare_arms(arms))
     elif a.cmd == 'compare':
         text, diffs = analyze.compare(read_json(resolve_run(a.a).dir / 'metrics.json'), read_json(resolve_run(a.b).dir / 'metrics.json'))
         print(text)

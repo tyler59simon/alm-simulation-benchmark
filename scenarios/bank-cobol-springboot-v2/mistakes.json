@@ -1,0 +1,9 @@
+{
+  "note": "Environment traps an agent learns from once: 'result' mistakes match a tool result the agent saw (the first one teaches; later sessions repeating it are memory misses); 'lint' mistakes come from CI lint violations attributed by git blame (a new violation of a rule the agent was already told about by the CI bot is a repeat).",
+  "mistakes": [
+    {"id": "M1", "kind": "result", "desc": "Commit rejected by policy ENG-7 (first line must start with a tracker key)",
+     "pattern": "commit-msg: REJECTED by Harbor Point policy ENG-7"},
+    {"id": "M2", "kind": "lint", "rule": "L1", "desc": "System.out/err printing in production code (CI lint L1)"},
+    {"id": "M3", "kind": "lint", "rule": "L2", "desc": "TODO/FIXME without a ticket key (CI lint L2)"}
+  ]
+}

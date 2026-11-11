@@ -1,0 +1,16 @@
+{
+  "root": "modern",
+  "glob": "**/*.java",
+  "note": "Heuristic presence checks over the final main branch; the qualitative review confirms or overrules each one.",
+  "checks": [
+    {"fact": "T1", "desc": "30/360 day count for SV1", "all": ["SV1", "360"]},
+    {"fact": "T2", "desc": "Half-even rounding at posting", "any": ["HALF_EVEN"]},
+    {"fact": "T2", "desc": "Truncation in daily accrual", "any": ["RoundingMode\\.DOWN", "ROUND_DOWN", "RoundingMode\\.FLOOR"]},
+    {"fact": "T3", "desc": "Century window at 70", "any": ["<\\s*70", ">=\\s*70", "PIVOT\\s*=\\s*70", "\\b70\\b.*(19|20)"]},
+    {"fact": "T4", "desc": "Account number masking", "any": ["mask", "\\*{4,}"]},
+    {"fact": "D1", "desc": "BigDecimal money", "all": ["BigDecimal"], "any": ["setScale\\(\\s*4", "SCALE\\s*=\\s*4", "scale\\s*=\\s*4"]},
+    {"fact": "D1", "desc": "No long-cents money left", "none": ["long\\s+(amount|balance|cents|minorUnits)\\b"]},
+    {"fact": "D2", "desc": "Overdraft fee 25.00", "any": ["\"25\\.00\"", "25\\.00", "2500L"]},
+    {"fact": "I1", "desc": "Duplicate reference guard", "any": ["(?i)idempot", "DUP", "(?i)duplicate"]}
+  ]
+}
