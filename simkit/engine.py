@@ -154,7 +154,9 @@ def handovers(run, sprint):
         agents = run.agents()
         ensure_agent(run, agents[h['to']])
         result = {'skipped': 'import_bundle false'}
-        if h.get('import_bundle'):
+        if run.options.get('memory') == 'off':
+            result = {'skipped': 'memory off (control arm)'}
+        elif h.get('import_bundle'):
             result = stores.handover(run.stores / h['from'], run.stores / h['to'], run.scenario['domain'],
                                      run.dir / 'handover' / f"{h['from']}.zip")
         append_jsonl(run.dir / 'handovers.jsonl', {'ts': now(), **h, 'result': result})

@@ -61,7 +61,12 @@ def handover(src_store, dst_store, domain, bundle):
     bundle.parent.mkdir(parents=True, exist_ok=True)
     if bundle.exists():
         bundle.unlink()
-    exported = lm(src_store, ['--domain', domain, 'export', '--out', str(bundle)])
+    try:
+        exported = lm(src_store, ['--domain', domain, 'export', '--out', str(bundle)])
+    except RuntimeError as e:
+        if 'No notes match' in str(e):   # the leaver saved nothing: there is nothing to hand over
+            return {'skipped': 'leaver store has no notes'}
+        raise
     plan = lm(dst_store, ['--domain', domain, 'import-plan', str(bundle)])
     applied = _apply(dst_store, plan, domain) if plan.get('plan_id') else {'skipped': 'no plan', 'plan': plan}
     return {'export': exported, 'plan': {k: plan.get(k) for k in ('plan_id', 'summary', 'counts', 'conflicts') if k in plan},
