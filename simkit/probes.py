@@ -1,4 +1,5 @@
 """Grading for work probes (sprint-4 tasks that silently need earlier knowledge) and an audit of the LLM grader."""
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -21,7 +22,8 @@ def _ts(s):
 
 def evidence(run, probe):
     """{'reply', 'diff', 'tracker'} for the probe's session, or None when the session never ran."""
-    from .engine import day_label, full_final
+    from .engine import day_label
+    from .replies import final_reply
     label = day_label(run, probe['sprint'], probe['day'])
     key = f"{label}/{probe['agent']}"
     row = run.state()['sessions'].get(key)
@@ -38,7 +40,7 @@ def evidence(run, probe):
         for p in sorted((run.workspace / d).rglob('*')):
             if p.is_file() and t0 and t1 and t0 <= p.stat().st_mtime <= t1 + 5:
                 tracker.append(f"--- {d}/{p.relative_to(run.workspace / d).as_posix()}\n" + p.read_text(encoding='utf-8', errors='replace'))
-    ev = {'reply': full_final(run, key, row), 'diff': diff, 'tracker': '\n'.join(tracker)}
+    ev = {'reply': final_reply(run.transcripts / f'{key}.jsonl', row.get('final') or ''), 'diff': diff, 'tracker': '\n'.join(tracker)}
     return {k: v[:EVIDENCE_CHARS[k]] + ('\n[... truncated]' if len(v) > EVIDENCE_CHARS[k] else '') for k, v in ev.items()}, key, row
 
 
@@ -79,10 +81,11 @@ def grade_probes(run):
                       'evidence fails. Do not use tools.\n\nTASK THEY WERE GIVEN:\n' + probe['task'] + '\n\nCRITERIA:\n' + items +
                       '\n\nEVIDENCE:\n' + _select(ev, 'reply+diff+tracker') +
                       '\n\nReply with only a JSON object: {"items": [{"id": "...", "pass": true, "reason": "short"}, ...]}')
-            r = _session(run, f"probe-grade/{probe['id']}", GRADER, prompt, room, allow=[], deny=NO_TOOLS,
-                         settings={'disableAllHooks': True})
+            # Keyed by the evidence graded, so corrected evidence is graded afresh rather than served a cached verdict.
+            gkey = f"probe-grade/{probe['id']}@{hashlib.sha256(prompt.encode()).hexdigest()[:8]}"
+            r = _session(run, gkey, GRADER, prompt, room, allow=[], deny=NO_TOOLS, settings={'disableAllHooks': True})
             from .engine import full_final
-            verdicts = {i.get('id'): i for i in (_last_json(full_final(run, f"probe-grade/{probe['id']}", r)) or {}).get('items', [])
+            verdicts = {i.get('id'): i for i in (_last_json(full_final(run, gkey, r)) or {}).get('items', [])
                         if isinstance(i, dict)}
         for c in judged:
             v = verdicts.get(c['id']) or {}

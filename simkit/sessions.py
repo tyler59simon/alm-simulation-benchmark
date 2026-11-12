@@ -31,6 +31,17 @@ def deny_rules(run, agent_id):
     return rules
 
 
+LINGER_S = 30   # seconds a session may stay alive after its result event
+
+
+def _is_result(line):
+    try:
+        ev = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(ev, dict) and ev.get('type') == 'result'
+
+
 def parse_transcript(path):
     info = {'session_id': None, 'result': None, 'tool_calls': 0, 'lm_calls': 0}
     try:
@@ -108,19 +119,42 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
             proc.stdin.close()
         except OSError:
             pass
-        timed_out = False
-        try:
-            proc.wait(timeout=timeout_min * 60)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            kill_tree(proc.pid)
-            proc.wait(timeout=60)
+        timed_out, lingered = False, None
+        deadline, result_at, pos, buf = time.monotonic() + timeout_min * 60, None, 0, b''
+        while proc.poll() is None:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                kill_tree(proc.pid)
+                proc.wait(timeout=60)
+                break
+            if result_at is None:
+                try:
+                    with open(out, 'rb') as fr:
+                        fr.seek(pos)
+                        chunk = fr.read()
+                        pos = fr.tell()
+                except OSError:
+                    chunk = b''
+                *lines, buf = (buf + chunk).split(b'\n')
+                if any(_is_result(line) for line in lines):
+                    result_at = time.monotonic()
+            elif time.monotonic() - result_at > LINGER_S:
+                # The agent has answered but a background command it started keeps the process alive until that
+                # command's own time limit; end it so one leftover wait loop does not hold up the whole wave.
+                lingered = round(time.monotonic() - result_at, 1)
+                kill_tree(proc.pid)
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.wait()   # could not kill it: wait as before rather than fail the run
+                break
+            time.sleep(2)
     info = parse_transcript(out)
     res = info['result'] or {}
     sid = info['session_id'] or res.get('session_id')
     row = {'key': key, 'agent': agent['id'], 'tier': agent.get('tier'), 'model': info.get('model') or tier['model'],
            'started': started, 'ended': now(), 'seconds': round(time.time() - t0, 1), 'exit': proc.returncode,
-           'timed_out': timed_out, 'subtype': res.get('subtype'), 'is_error': res.get('is_error'),
+           'timed_out': timed_out, 'ended_after_result': lingered, 'subtype': res.get('subtype'), 'is_error': res.get('is_error'),
            'cost_usd': res.get('total_cost_usd'), 'turns': res.get('num_turns'), 'usage': res.get('usage'),
            'session_id': sid, 'session_hash': session_hash(sid) if sid else None,
            'tool_calls': info['tool_calls'], 'lm_calls': info['lm_calls'], 'final': (res.get('result') or '')[-1500:],

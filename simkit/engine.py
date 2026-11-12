@@ -366,9 +366,16 @@ REPO_INTRO = ('Today is the LIGHTHOUSE knowledge review before go-live. Answer e
 
 
 def full_final(run, key, row):
-    """The session's whole final reply, from its transcript; the state row keeps only a 1,500-char tail."""
-    res = sessions.parse_transcript(run.transcripts / f'{key}.jsonl').get('result') or {}
-    return res.get('result') or (row or {}).get('final') or ''
+    """The session's whole reply, from its transcript (see replies.final_reply); the state row keeps only a 1,500-char tail."""
+    from .replies import final_reply
+    return final_reply(run.transcripts / f'{key}.jsonl', (row or {}).get('final') or '')
+
+
+def quiz_answers(run, key):
+    """The {"answers": [...]} object the agent wrote, even when memory housekeeping came after it."""
+    from .replies import json_reply
+    found = json_reply(run.transcripts / f'{key}.jsonl', 'answers')
+    return {'answers': found['answers']} if found and isinstance(found.get('answers'), list) else {}
 
 
 def quiz_dir(run, mode):
@@ -385,9 +392,7 @@ def quiz(run, mode='memory'):
     body = intro + '\n\n' + '\n'.join(f"{x['id']}. {x['text']}" for x in q['questions'])
     body += ('\n\nWhen you are done, reply with only a JSON object of the form '
              '{"answers": [{"id": "q1", "answer": "..."}, ...]} covering every question.')
-    for agent in run.scenario['roster']:
-        if not (run.stores / agent['id']).exists():
-            continue
+    def one(agent):
         short = run.events.get('style') == 'short'
         # v2: the engineer is speaking (identity in the system prompt, like a personal CLAUDE.md); v1: a role header.
         who = {'system_append': identity(run, agent)} if short else {}
@@ -404,8 +409,11 @@ def quiz(run, mode='memory'):
                 gitops.git(run.ws / agent['id'], 'fetch', '-q', 'origin')
                 gitops.git(run.ws / agent['id'], 'checkout', '-q', '-B', f"{agent['id']}/quiz", 'origin/main')
             row = _session(run, key, agent, header + body, run.ws / agent['id'], **who)
-        answers = _last_json(full_final(run, key, row)) or {}
-        write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **answers})
+        write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **quiz_answers(run, key)})
+
+    takers = [a for a in run.scenario['roster'] if (run.stores / a['id']).exists()]
+    with ThreadPoolExecutor(max_workers=run.scenario.get('parallel', 4)) as pool:
+        list(pool.map(one, takers))   # list() re-raises a session's exception (e.g. SpendLimit)
     run.mark('quiz' if mode == 'memory' else f'quiz-{mode}')
 
 
