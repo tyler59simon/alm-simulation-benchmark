@@ -1,0 +1,341 @@
+{
+  "facts": {
+    "T1": {
+      "summary": "Day count by product",
+      "answer": "SV1 (Heritage Savings, all opened before 2009) accrues on 30/360: the 31st accrues 0 days and the last day of February accrues up to day 30 (3 days in a 28-day Feb). SV2 and MMA accrue actual/365 (365 even in leap years). CHK earns no interest. SV1 must stay a separate product and never be converted to SV2 (2016 regulatory complaint). The planned SV3 Heritage Plus keeps the Heritage 30/360 terms.",
+      "source": "Helen Brandt (team_chat) after a Slack nudge to po in s1d1; INTCALC product table and 2200-GET-DAYS",
+      "should_know": [
+        "po",
+        "arch",
+        "la1",
+        "dev-int",
+        "dev-int2",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "30 ?/ ?360.{0,80}(sv1|heritage)",
+          "(sv1|heritage).{0,80}30 ?/ ?360"
+        ]
+      }
+    },
+    "T2": {
+      "summary": "Rounding of interest",
+      "answer": "Daily accrual is truncated (not rounded) to 6 decimals; month-end posting rounds to cents with banker's rounding (half-even, ROUNDED MODE NEAREST-EVEN).",
+      "source": "INTCALC 2300-ACCRUE, EODPOST 2100-POST-INTEREST; Pat Quinn",
+      "should_know": [
+        "la1",
+        "dev-int",
+        "dev-int2",
+        "dev-ledger",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "half.?even",
+          "banker",
+          "nearest.?even"
+        ]
+      }
+    },
+    "T3": {
+      "summary": "Legacy date format",
+      "answer": "Dates are Julian YYDDD PIC 9(5) with a century window in DATEUTIL 9000-CONVERT-JULIAN: YY < 70 means 20YY, otherwise 19YY. So a 1968/1969 opening date reads as 2068/2069 in legacy; the business chose to leave those, and the new system must reproduce legacy.",
+      "source": "DATEUTIL; Pat Quinn",
+      "should_know": [
+        "mig",
+        "la1",
+        "dev-acct",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "century",
+          "yy ?< ?70",
+          "below 70",
+          "pivot"
+        ]
+      }
+    },
+    "T4": {
+      "summary": "Account number masking",
+      "answer": "Full account numbers must never appear in application logs, batch reports or audit records, and that includes exports and partner files: mask to the last 4 digits (******1234) under RF-2025-07. Customer statements are exempt. Every balance change needs an audit record with before, after and the masked account.",
+      "source": "Slack to sec s1d1; Mei Lin",
+      "should_know": [
+        "sec",
+        "sec2",
+        "po",
+        "arch",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "ops",
+        "la1",
+        "la2"
+      ],
+      "patterns": {
+        "current": [
+          "mask",
+          "last 4",
+          "last four",
+          "rf-2025-07"
+        ]
+      }
+    },
+    "D1": {
+      "summary": "Money representation",
+      "answer": "BigDecimal with scale 4 (directive CFO-2025-03, sprint 3, for phase-2 FX), replacing the sprint-1 PMO guidance of long minor units (cents); rounding to cents only at posting and fees.",
+      "stale_answer": "long minor units / cents",
+      "source": "Slack to arch s1d1 (long cents), reversed by Slack to arch s3d1; Daniel Okoro",
+      "should_know": [
+        "arch",
+        "po",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "ops",
+        "sec2"
+      ],
+      "patterns": {
+        "current": [
+          "bigdecimal",
+          "scale ?4",
+          "scale of 4"
+        ],
+        "stale": [
+          "long.{0,30}(cents|minor)",
+          "minor units",
+          "integer cents"
+        ]
+      }
+    },
+    "D2": {
+      "summary": "Overdraft fee",
+      "answer": "$25.00 per overdraft event (PC-2025-14), capped at 3 overdraft fees per statement month (PC-2025-21, sprint 4), so at most $75.00 a month. Both are approved deviations from legacy, which charged $35.00 per event with no cap.",
+      "stale_answer": "$35.00 per event, or $25.00 with no cap",
+      "source": "Slack to po s2d1 and s4d1; Owen Achterberg",
+      "should_know": [
+        "po",
+        "dev-ledger",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "pc-2025-21",
+          "cap(ped)? (at|of) (3|three)",
+          "(3|three) (overdraft )?fees? (per|a|each) (statement )?month",
+          "75\\.00"
+        ],
+        "stale": [
+          "35\\.00",
+          "\\$35"
+        ]
+      }
+    },
+    "H1": {
+      "summary": "Ownership changes",
+      "answer": "Chen Wei (dev-int) owned interest in sprints 1-2 and moved to the Cards team; Lucas Ferreira (dev-int2) owns interest since sprint 3. Raj Malhotra (sec) moved to Payments Security after sprint 3; Nadia Haddad (sec2) owns security and compliance since sprint 4. Aisha Rahman covered payments while Sofia Marchetti was on vacation (sprint 3, days 2-3).",
+      "source": "roster changes, handoffs, vacation cover",
+      "should_know": [
+        "dev-int2",
+        "sec2",
+        "po",
+        "arch",
+        "qa",
+        "dev-acct",
+        "dev-pay"
+      ],
+      "patterns": {
+        "current": [
+          "lucas",
+          "ferreira",
+          "nadia",
+          "haddad"
+        ]
+      }
+    },
+    "I1": {
+      "summary": "Retried transfer incident",
+      "answer": "INC-0042: a mobile retry with the same TXN-REF and a new TXN-ID was posted twice by the new system. Legacy XFERPROC rejects a non-blank TXN-REF already posted earlier the same business day with reason DUP (the 'CHANNEL RETRY GUARD'); rejected transactions do not count and next-day repeats post. Fix: a per-business-day duplicate check on TXN-REF.",
+      "source": "Slack to dev-pay and ops s4d1; XFERPROC 2010-DUP-CHECK; Carla Mendes; Pat Quinn",
+      "should_know": [
+        "dev-pay",
+        "ops",
+        "qa",
+        "la2"
+      ],
+      "patterns": {
+        "current": [
+          "inc-0042",
+          "txn-?ref.{0,80}(same|business) day",
+          "(same|business) day.{0,80}txn-?ref"
+        ]
+      }
+    },
+    "O1": {
+      "summary": "Maintenance fee",
+      "answer": "At month end, CHK accounts (active or frozen) with a balance below $500.00 before fees pay a $5.00 maintenance fee (MF), written before the overdraft fee. Unchanged from legacy.",
+      "source": "FEEASSES; Helen Brandt",
+      "should_know": [
+        "la2",
+        "dev-ledger",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "maintenance fee",
+          "500\\.00"
+        ]
+      }
+    },
+    "O2": {
+      "summary": "Overdraft counting",
+      "answer": "Only CHK may go negative; the overdraft count goes up by one each time a debit takes the balance from >= 0 to < 0. Savings products reject with NSF instead. Fee = count x fee at month end (now capped at 3), then the count resets.",
+      "source": "XFERPROC 2560-DEBIT-ACCT",
+      "should_know": [
+        "la2",
+        "dev-pay",
+        "dev-ledger",
+        "qa"
+      ],
+      "patterns": {
+        "current": [
+          "crossing",
+          "od.?count",
+          "overdraft count",
+          "below zero"
+        ]
+      }
+    },
+    "P1": {
+      "summary": "Project phase and go-live criterion",
+      "answer": "Sprint 4 of 4: the parallel-run dress rehearsal and go-live readiness. Go-live requires golden-master parity for 2025-02-01..2025-03-31 (daily POSTED, REJECTS and ACCTMAST, plus month-end statements) except deviations the business approved in writing.",
+      "source": "tracker LH-1, CLAUDE.md, sprint work",
+      "should_know": [
+        "po",
+        "arch",
+        "la1",
+        "la2",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "sec2",
+        "ops"
+      ],
+      "patterns": {
+        "current": [
+          "dress rehearsal",
+          "go-live.{0,80}parity",
+          "parity.{0,80}go-live"
+        ]
+      }
+    },
+    "P2": {
+      "summary": "Current owners",
+      "answer": "Payments: Sofia Marchetti (dev-pay). Interest: Lucas Ferreira (dev-int2), since sprint 3. Parity testing: Elena Petrova (qa). Security and compliance: Nadia Haddad (sec2), since sprint 4.",
+      "stale_answer": "Chen Wei for interest or Raj Malhotra for security",
+      "source": "wiki Team page (if kept current), handoffs",
+      "should_know": [
+        "po",
+        "arch",
+        "la1",
+        "la2",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "sec2",
+        "ops"
+      ],
+      "patterns": {
+        "current": [
+          "(owns|owner of|owned by|ownership of).{0,40}(payments|interest|parity|security)",
+          "(payments|interest|parity|security).{0,40}(owner|owned by|owns)"
+        ]
+      }
+    },
+    "P3": {
+      "summary": "Approved deviations from legacy",
+      "answer": "Two, both on the overdraft fee: $25.00 per event instead of $35.00 (PC-2025-14) and a cap of 3 overdraft fees per statement month (PC-2025-21). Everything else must match legacy.",
+      "stale_answer": "only the $25 fee, or none",
+      "source": "Slack to po; Owen Achterberg",
+      "should_know": [
+        "po",
+        "arch",
+        "dev-ledger",
+        "qa",
+        "ops"
+      ],
+      "patterns": {
+        "current": [
+          "approved deviations?",
+          "pc-2025-14.{0,200}pc-2025-21",
+          "pc-2025-21.{0,200}pc-2025-14"
+        ]
+      }
+    },
+    "E1": {
+      "summary": "Commit message policy",
+      "answer": "Policy ENG-7: the first line of every commit message must start with a tracker key, e.g. 'LH-123: Add accrual job'; a workstation git hook rejects anything else (merges and reverts excepted).",
+      "source": "wiki Engineering conventions; the hook's rejection message",
+      "should_know": [
+        "po",
+        "arch",
+        "la1",
+        "la2",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "sec",
+        "sec2",
+        "ops"
+      ],
+      "patterns": {
+        "current": [
+          "eng-7",
+          "(first line|commit message).{0,80}(tracker|ticket) key",
+          "(tracker|ticket) key.{0,80}commit"
+        ]
+      }
+    },
+    "E2": {
+      "summary": "CI lint rules",
+      "answer": "CI runs ci-lint after the build: L1 no System.out/System.err printing in production code (use the logger); L2 every TODO/FIXME names its ticket, TODO(LH-123). Local verify does not run it; py bin/lint.py does.",
+      "source": "wiki Engineering conventions; red CI messages",
+      "should_know": [
+        "arch",
+        "dev-acct",
+        "dev-ledger",
+        "dev-int",
+        "dev-int2",
+        "dev-pay",
+        "mig",
+        "qa",
+        "ops"
+      ],
+      "patterns": {
+        "current": [
+          "ci-lint",
+          "system\\.out",
+          "todo\\(lh"
+        ]
+      }
+    }
+  }
+}

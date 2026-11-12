@@ -44,6 +44,23 @@ def evidence(run, probe):
     return {k: v[:EVIDENCE_CHARS[k]] + ('\n[... truncated]' if len(v) > EVIDENCE_CHARS[k] else '') for k, v in ev.items()}, key, row
 
 
+def reuse_verdict(run, old_key, new_key, prompt):
+    """Runs graded before probe grades were keyed by their evidence kept them under `old_key`. When that grading saw
+    exactly this prompt, alias it under `new_key` so the verdict is reused instead of asking the judge again."""
+    sessions = run.state()['sessions']
+    row, prompt_file = sessions.get(old_key), run.transcripts / f'{old_key}.prompt.md'
+    if sessions.get(new_key) or not (row and row.get('ended') and prompt_file.exists()):
+        return False
+    if prompt_file.read_text(encoding='utf-8') != prompt:
+        return False
+    for suffix in ('.jsonl', '.prompt.md'):
+        src = run.transcripts / f'{old_key}{suffix}'
+        if src.exists():
+            (run.transcripts / f'{new_key}{suffix}').write_bytes(src.read_bytes())
+    run.update_state(lambda s: s['sessions'].__setitem__(new_key, {**row, 'key': new_key, 'aliased_from': old_key}))
+    return True
+
+
 def grader_store(run):
     from . import stores
     store = run.stores / '_grader'
@@ -83,6 +100,7 @@ def grade_probes(run):
                       '\n\nReply with only a JSON object: {"items": [{"id": "...", "pass": true, "reason": "short"}, ...]}')
             # Keyed by the evidence graded, so corrected evidence is graded afresh rather than served a cached verdict.
             gkey = f"probe-grade/{probe['id']}@{hashlib.sha256(prompt.encode()).hexdigest()[:8]}"
+            reuse_verdict(run, f"probe-grade/{probe['id']}", gkey, prompt)
             r = _session(run, gkey, GRADER, prompt, room, allow=[], deny=NO_TOOLS, settings={'disableAllHooks': True})
             from .engine import full_final
             verdicts = {i.get('id'): i for i in (_last_json(full_final(run, gkey, r)) or {}).get('items', [])

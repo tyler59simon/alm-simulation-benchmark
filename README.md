@@ -64,10 +64,28 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 | A0 | `off` | No memory at all: hooks disabled and Claude Code auto-memory disabled. |
 | A1 | `builtin` | Claude Code as shipped: auto-memory on, no Living Memory. |
 | C | `on` | Living Memory as installed. |
+| D | `kb-quiz` on a finished run | A brand-new agent whose fresh store indexes the finished repo, wiki and tracker as a knowledge base takes the memory-only quiz. Built, not yet run. |
 
 **Commands:**
-- `sim.py pipeline SCENARIO --memory M --label L` runs one arm end to end and is resumable with `--run`.
-- `sim.py compare-arms A0=r1,r2,r3 A1=... C=...` prints mean ± sd per metric across seeds: probe score, the quiz with and without repo access, efficiency (turns, tool calls, $ per session), CI share, repeated mistakes and stale notes.
+- `sim.py pipeline SCENARIO --memory M --label L` runs one arm end to end and is resumable with `--run`. Arm C takes the memory-only quiz before the repo quiz, and store contents are snapshotted (`stores-at-end.json`) before any quiz, so the repo quiz cannot feed the memory score.
+- `sim.py kb-quiz --run RUN [--digests-budget USD]` runs arm D against a finished run; `--digests-budget` also has `scripts/ingest_run.py` write digest notes first.
+- `sim.py compare-arms A0=r1,r2,r3 A1=... C=...` prints mean ± sd per metric across seeds: probe score, the quizzes, efficiency (turns, tool calls, $ per session), CI share, repeated mistakes and stale notes.
+
+**Harness behaviour worth knowing:**
+- A session ends 30 s after its final `result` event; background commands an agent left running are killed (`ended_after_result` in the session row).
+- Replies are read with `simkit/replies.py`: the first result, plus the text written before any trailing Living Memory housekeeping.
+- Agent sessions get `LIVING_MEMORY_HEADLESS=1`.
+- Probe grades are keyed by the evidence graded; an earlier verdict on identical evidence is reused.
+- `metrics.json` `quiz_repo_reads` lists memory-quiz commands that named a repo path (it should be empty).
+
+## Scenario v3
+`scenarios/bank-cobol-springboot-v3` is v2 plus three fixes found in seed 1 (v2 stays unchanged so its runs reproduce):
+- Colleagues know decisions only from the sprint they are made (`knows` entries with `from_sprint` / `until_sprint`).
+- A recurring trap for the repeated-mistake metric: `tracker.py list --owner` wants a user handle (`tracker.py people`), not a display name (mistake `M4`).
+- Stricter fact patterns in `ground_truth.json`, so capture and retrieval misses are not inflated by loose matches.
+
+## Tests
+`py -3.10 -m unittest discover -s tests` runs offline harness tests (no agents, no model).
 
 ## Isolation guarantees
 - Each child gets `LIVING_MEMORY_ROOT=<its store>` and debug or content logging, and the store is marked `sandbox.json`. Inherited `CLAUDE*` and `LIVING_MEMORY*` variables are stripped.

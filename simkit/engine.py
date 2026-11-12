@@ -355,8 +355,10 @@ def _last_json(text):
 QUIZ_DENY = ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Agent', 'Task']
 # The quiz measures memory, not the repository: shell reads are denied too (Living Memory commands stay allowed by its hook).
 QUIZ_SHELL_DENY = [f'{shell}({c} *)' for shell in ('Bash', 'PowerShell') for c in
-                   ('cat', 'ls', 'git', 'grep', 'find', 'head', 'tail', 'type', 'more', 'less', 'dir', 'tree', 'rg',
-                    'Get-Content', 'Get-ChildItem', 'Select-String')]   # not python: the LM CMD is a python command
+                   ('cat', 'ls', 'git', 'grep', 'find', 'type', 'dir', 'tree', 'rg',
+                    'Get-Content', 'Get-ChildItem', 'Select-String')]
+# Not python (the LM CMD is a python command) and not head/tail/more/less: agents pipe search output through them, and a
+# denied pipe stage denies the whole loop. analyze.quiz_repo_reads flags any memory-quiz command that names a repo path.
 
 
 QUIZ_MODES = ('memory', 'repo')
@@ -376,6 +378,21 @@ def quiz_answers(run, key):
     from .replies import json_reply
     found = json_reply(run.transcripts / f'{key}.jsonl', 'answers')
     return {'answers': found['answers']} if found and isinstance(found.get('answers'), list) else {}
+
+
+def quiz_modes(memory):
+    """Quizzes a run takes, in order. Memory-only goes first: during the repo quiz agents update their notes, which
+    would otherwise leak into the memory-only score."""
+    return ['repo'] if memory in ('off', 'builtin') else ['memory', 'repo']
+
+
+def quiz_room(run, agent_id):
+    """An empty folder outside any git work tree: inside the harness repo, Living Memory would treat the harness as
+    the agent's repo (its map, its brief)."""
+    import tempfile
+    room = Path(tempfile.gettempdir()) / 'lm-team-sim' / 'quizroom' / run.dir.name / agent_id
+    room.mkdir(parents=True, exist_ok=True)
+    return room
 
 
 def quiz_dir(run, mode):
@@ -399,7 +416,7 @@ def quiz(run, mode='memory'):
         header = '' if short else f"You are {agent['name']}, {agent['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust.\n\n"
         key = f'quiz/{agent["id"]}' if mode == 'memory' else f'quiz-{mode}/{agent["id"]}'
         if mode == 'memory':
-            room = run.dir / 'quizroom' / agent['id']
+            room = quiz_room(run, agent['id'])
             stores.bind(run.stores / agent['id'], run.scenario['domain'], room)
             row = _session(run, key, agent, header + body, room, allow=[],
                            deny=QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, agent['id']), **who)
@@ -411,10 +428,63 @@ def quiz(run, mode='memory'):
             row = _session(run, key, agent, header + body, run.ws / agent['id'], **who)
         write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **quiz_answers(run, key)})
 
+    from .analyze import snapshot_stores
+    snapshot_stores(run)   # what memory held when the work ended, before any quiz can add to it
     takers = [a for a in run.scenario['roster'] if (run.stores / a['id']).exists()]
     with ThreadPoolExecutor(max_workers=run.scenario.get('parallel', 4)) as pool:
         list(pool.map(one, takers))   # list() re-raises a session's exception (e.g. SpendLimit)
     run.mark('quiz' if mode == 'memory' else f'quiz-{mode}')
+
+
+KB_AGENT = {'id': '_kb', 'tier': 'sonnet-low', 'name': 'Sam Rivera', 'title': 'Engineer (new joiner)'}
+
+
+def kb_quiz(run, digests_budget=None):
+    """Arm D (knowledge-base acceptance): a brand-new agent with no history gets a fresh store whose knowledge base
+    indexes the finished repo, the wiki and the tracker, then takes the memory-only quiz with only Living Memory
+    (notes, `ask`, `search --sources`) to answer from. Graded like the other quizzes, as mode 'kb'."""
+    from .common import config
+    store, kb = run.stores / KB_AGENT['id'], run.dir / 'kb'
+    repo = kb / 'repo'
+    if not repo.exists():
+        kb.mkdir(parents=True, exist_ok=True)
+        gitops.git(run.dir, 'clone', '-q', *gitops.NO_EOL, str(run.origin), str(repo))   # main as the team left it
+    domain = run.scenario['domain']
+    if not (store / 'tag_taxonomy.json').exists():
+        stores.bootstrap(store, domain, [repo], run.scenario.get('taxonomy_extra', []))
+        if run.workspace_enabled:
+            for name, kind, folder in (('wiki', 'html-export', run.workspace / 'wiki'), ('tracker', 'folder', run.workspace / 'tracker')):
+                if folder.is_dir():
+                    payload = kb / f'source-{name}.json'
+                    write_json(payload, {'name': name, 'domain': domain, 'kind': kind, 'path': str(folder)})
+                    stores._apply(store, stores.lm(store, ['--domain', domain, 'source-plan', 'add', '--payload-file', str(payload)]), domain)
+    if not run.done('kb-sync'):
+        synced = stores.lm(store, ['--domain', domain, 'source-sync'], cwd=repo)
+        write_json(kb / 'sync.json', synced)
+        run.mark('kb-sync')
+    if digests_budget and not run.done('kb-digests'):
+        script = Path(config()['lm_cli']).parent / 'scripts' / 'ingest_run.py'
+        if not script.exists():
+            raise SystemExit(f'digests need {script}: deploy a Living Memory build with scripts/ingest_run.py')
+        r = run_cmd([config()['python'], str(script), '--root', str(store), '--domain', domain, '--cwd', str(repo),
+                     '--budget-usd', str(digests_budget)], cwd=repo, env=sessions.clean_env({'LIVING_MEMORY_ROOT': str(store),
+                     'LIVING_MEMORY_HEADLESS': '1'}), timeout=6 * 3600)
+        (kb / 'digests.out').write_text((r.stdout or '') + (r.stderr or ''), encoding='utf-8')
+        run.mark('kb-digests')
+    room = quiz_room(run, KB_AGENT['id'])
+    stores.bind(store, domain, room)
+    q = run.quiz
+    body = q['intro'] + '\n\n' + '\n'.join(f"{x['id']}. {x['text']}" for x in q['questions'])
+    body += ('\n\nWhen you are done, reply with only a JSON object of the form '
+             '{"answers": [{"id": "q1", "answer": "..."}, ...]} covering every question.')
+    who = f"You are {KB_AGENT['name']}, {KB_AGENT['title']} on Project LIGHTHOUSE at Harbor Point Savings & Trust, starting today."
+    key = 'quiz-kb/_kb'
+    deny = QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, KB_AGENT['id'])
+    deny += [f'{t}({sessions.rule_path(kb)}/**)' for t in ('Read', 'Edit', 'Write')]   # the indexed copy is reachable only through memory
+    _session(run, key, KB_AGENT, body, room, allow=[], deny=deny, system_append=who)
+    write_json(quiz_dir(run, 'kb') / 'answers' / f"{KB_AGENT['id']}.json", {'agent': KB_AGENT['id'], **quiz_answers(run, key)})
+    run.mark('quiz-kb')
+    grade(run, 'kb')
 
 
 def grade(run, mode='memory'):

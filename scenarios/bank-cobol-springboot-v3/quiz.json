@@ -1,0 +1,23 @@
+{
+  "intro": "Quick favour while the repo, tracker and wiki are down for the maintenance window: a new engineer joins LIGHTHOUSE next week and I'm drafting their FAQ. Can you answer these, one or two sentences each, from what you already know? If you don't know one, put \"unknown\" rather than guessing.",
+  "intro_repo": "A new engineer joins LIGHTHOUSE next week and I'm putting together their FAQ. Can you answer these, one or two sentences each? Use whatever you need: the repo, the tracker, the wiki, or what you already know. If you can't find one, put \"unknown\" rather than guessing.",
+  "questions": [
+    {"id": "q1", "fact": "T1", "text": "Which interest day-count convention applies to each product (SV1, SV2, MMA, CHK)?"},
+    {"id": "q2", "fact": "T1", "text": "Why must Heritage Savings (SV1) accounts never be converted to SV2?"},
+    {"id": "q3", "fact": "T2", "text": "How is interest rounded in the daily accrual, and when it is posted at month end?"},
+    {"id": "q4", "fact": "T3", "text": "How are dates stored in the legacy files, and how is the century decided?"},
+    {"id": "q5", "fact": "T4", "text": "What's the rule for account numbers in logs, reports, exports and audit records, and what is exempt?"},
+    {"id": "q6", "fact": "D1", "text": "How are monetary amounts represented in the Java code today?"},
+    {"id": "q7", "fact": "D1", "text": "Has the money representation ever changed? From what, to what, and why?"},
+    {"id": "q8", "fact": "D2", "text": "What overdraft fees does the new system charge?"},
+    {"id": "q9", "fact": "O1", "text": "When is a maintenance fee charged, and how much?"},
+    {"id": "q10", "fact": "O2", "text": "How does the legacy system count overdrafts for the overdraft fee?"},
+    {"id": "q11", "fact": "H1", "text": "Who has owned the interest module and the security work over the project, and who covered payments during Sofia's vacation?"},
+    {"id": "q12", "fact": "I1", "text": "What happened in incident INC-0042, how does the legacy system prevent it, and what was the fix?"},
+    {"id": "q13", "fact": "P1", "text": "What phase is the project in, and what has to be true before it can go live?"},
+    {"id": "q14", "fact": "P2", "text": "Who owns payments, interest, parity testing and security right now?"},
+    {"id": "q15", "fact": "P3", "text": "Which deviations from legacy behaviour has the business approved?"},
+    {"id": "q16", "fact": "E1", "text": "What must the first line of every commit message look like, and what happens if it doesn't?"},
+    {"id": "q17", "fact": "E2", "text": "What does CI check beyond the Maven build?"}
+  ]
+}

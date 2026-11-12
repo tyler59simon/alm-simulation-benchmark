@@ -117,6 +117,22 @@ def automemory_files(ws_path):
     return len([p for p in d.rglob('*') if p.is_file()]) if d.exists() else 0
 
 
+END_SNAPSHOT = 'stores-at-end.json'
+END_KEYS = ('notes_total', 'notes_active', 'by_type', 'by_status', 'maps', 'active_chars', 'noise_notes', 'facts')
+
+
+def snapshot_stores(run):
+    """Store contents when the last sprint ended, written once before the first quiz. Quizzes let agents update notes,
+    so fact coverage and capture/retrieval classification read this snapshot when it exists."""
+    path = run.dir / END_SNAPSHOT
+    if path.exists():
+        return read_json(path)
+    snap = {p.name: {k: v for k, v in store_metrics(p, run.truth).items() if k in END_KEYS}
+            for p in sorted(run.stores.glob('*')) if p.is_dir() and not p.name.startswith('_')}
+    write_json(path, snap)
+    return snap
+
+
 # ---------- transcripts ----------
 def transcript_metrics(path, run_dir, agent):
     tools, lm_sub, lm_err, leaks, pending = Counter(), Counter(), 0, [], {}
@@ -176,6 +192,25 @@ def app_checks(run):
 
 # ---------- quiz ----------
 GRADE_SCORE = {'correct': 1.0, 'partial': 0.5}
+
+
+def quiz_repo_reads(run):
+    """Memory-only quiz commands that name the agent's clone, the integration repo or the workspace: a read that the
+    deny rules did not catch would let the repo answer for memory."""
+    marks = [str(run.ws), str(run.dir / 'integration'), str(run.workspace) if run.workspace_enabled else None]
+    marks = [m.replace('\\', '/').lower() for m in marks if m]
+    found = {}
+    for t in sorted((run.transcripts / 'quiz').glob('*.jsonl')):
+        for ev in read_jsonl(t):
+            if ev.get('type') != 'assistant':
+                continue
+            for c in (ev.get('message') or {}).get('content') or []:
+                if c.get('type') == 'tool_use':
+                    raw = ' '.join(str(v) for v in (c.get('input') or {}).values())   # unescaped command text
+                    text = raw.replace('\\', '/').lower()
+                    if any(m in text for m in marks):
+                        found.setdefault(t.stem, []).append(text[:200])
+    return found
 
 
 def quiz_metrics(run, per_store, mode='memory'):
@@ -402,6 +437,11 @@ def analyze(run):
     per_store = {p.name: store_metrics(p, run.truth) for p in sorted(run.stores.glob('*')) if not p.name.startswith('_')}
     for name, m in per_store.items():
         m['claude_automemory_files'] = automemory_files(run.ws / name)
+    end = read_json(run.dir / END_SNAPSHOT) or {}
+    for name, snap in end.items():   # content as of the end of the work; what the quizzes added is kept beside it
+        if name in per_store:
+            per_store[name]['after_quizzes'] = {k: per_store[name].get(k) for k in END_KEYS}
+            per_store[name].update(snap)
     per_session = {}
     for r in sess:
         t = run.transcripts / f"{r['key']}.jsonl"
@@ -444,8 +484,8 @@ def analyze(run):
                    'conflicts_first_try': sum(1 for r in merges if not r.get('ok') and r.get('attempt') == 1),
                    'files_swept_uncommitted': sum(r.get('swept') or 0 for r in merges)},
         'handovers': read_jsonl(run.dir / 'handovers.jsonl'), 'app': app_checks(run),
-        'options': run.options, 'quiz': quiz_metrics(run, per_store), 'quiz_repo': quiz_metrics(run, per_store, 'repo'),
-        'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
+        'options': run.options, 'quiz': quiz_metrics(run, per_store), 'quiz_repo': quiz_metrics(run, per_store, 'repo'), 'quiz_kb': quiz_metrics(run, per_store, 'kb'),
+        'quiz_repo_reads': quiz_repo_reads(run), 'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
         'probes': probe_metrics(run), 'efficiency': efficiency(run),
         'grader_audit': {k: v for k, v in (read_json(run.dir / 'quiz' / 'grader-audit.json') or {}).items() if k != 'rows'} or None,
         'currency': {'updates': sum(s['usage'].get('update', 0) for s in per_store.values()),
@@ -469,6 +509,9 @@ def summary(m):
         lines.append(f"quiz (memory only): all {q['score_all']}, should-know {q['score_should_know']}, failures {q['failure_kinds_should_know']}")
     if qr:
         lines.append(f"quiz (with repo): all {qr['score_all']}, should-know {qr['score_should_know']}")
+    qk = m.get('quiz_kb')
+    if qk:
+        lines.append(f"quiz (fresh agent, knowledge base only): all {qk['score_all']}")
     for mid, mk in (m.get('mistakes') or {}).items():
         if mk.get('kind') == 'result':
             lines.append(f"mistake {mid} ({mk['desc'][:50]}): {mk['total']} hits by {mk['agents_hit']} agents, "
@@ -535,6 +578,7 @@ ARM_METRICS = (
     ('probe score', lambda m: (m.get('probes') or {}).get('mean_score')),
     ('quiz with repo, should-know', lambda m: (m.get('quiz_repo') or {}).get('score_should_know')),
     ('quiz memory-only, should-know', lambda m: (m.get('quiz') or {}).get('score_should_know')),
+    ('quiz fresh agent, knowledge base', lambda m: (m.get('quiz_kb') or {}).get('score_all')),
     ('probe turns', lambda m: (m.get('probes') or {}).get('mean_turns')),
     ('probe tool calls', lambda m: (m.get('probes') or {}).get('mean_tool_calls')),
     ('probe $', lambda m: (m.get('probes') or {}).get('cost_usd')),

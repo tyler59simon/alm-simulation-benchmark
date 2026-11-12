@@ -1,0 +1,1 @@
+You own the accounts module in `modern/` (account master, products, statuses, the account record, repositories and account REST endpoints). Implement from the legacy specifications and tickets, with JUnit 5 tests.

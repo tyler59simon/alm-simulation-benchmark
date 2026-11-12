@@ -1,0 +1,278 @@
+{
+  "name": "bank-cobol-springboot-v3",
+  "description": "Realistic variant v3 (v2 plus time-gated colleague knowledge, a recurring tracker trap and stricter fact patterns): Harbor Point Savings & Trust modernizes its COBOL nightly batch to Java 21 / Spring Boot 3. Short engineer-voice prompts, conventions in the repo CLAUDE.md, tracker and wiki outside the repo, business colleagues on Slack, natural traps, two handovers and a vacation, 3 working days per sprint, work probes in sprint 4.",
+  "domain": "bankmod",
+  "sprints": 4,
+  "days_per_sprint": 3,
+  "parallel": 4,
+  "session_timeout_min": 30,
+  "spend_limit_usd": 60,
+  "tiers": {
+    "haiku": {
+      "model": "haiku",
+      "budget_usd": 1.5,
+      "permission_mode": "bypassPermissions"
+    },
+    "sonnet-low": {
+      "model": "sonnet",
+      "effort": "low",
+      "budget_usd": 3.0,
+      "permission_mode": "bypassPermissions"
+    },
+    "grader": {
+      "model": "sonnet",
+      "budget_usd": 2.0
+    }
+  },
+  "roster": [
+    {
+      "id": "po",
+      "name": "Priya Okonkwo",
+      "title": "Product Owner / Business Analyst",
+      "owns": "the backlog and the record of business decisions",
+      "tier": "sonnet-low",
+      "briefing": "briefings/po.md"
+    },
+    {
+      "id": "arch",
+      "name": "Marcus Lindqvist",
+      "title": "Tech Lead / Architect",
+      "owns": "the architecture, ADRs and shared types",
+      "tier": "sonnet-low",
+      "briefing": "briefings/arch.md"
+    },
+    {
+      "id": "la1",
+      "name": "Dana Whitfield",
+      "title": "Legacy Analyst",
+      "owns": "the specs for INTCALC, EODPOST, ACCTMNT and DATEUTIL",
+      "tier": "haiku",
+      "briefing": "briefings/la1.md"
+    },
+    {
+      "id": "la2",
+      "name": "Tomas Reyes",
+      "title": "Legacy Analyst",
+      "owns": "the specs for the NIGHTLY flow, XFERPROC, FEEASSES and STMTGEN",
+      "tier": "haiku",
+      "briefing": "briefings/la2.md"
+    },
+    {
+      "id": "dev-acct",
+      "name": "Aisha Rahman",
+      "title": "Developer",
+      "owns": "the accounts module",
+      "tier": "haiku",
+      "briefing": "briefings/dev-acct.md"
+    },
+    {
+      "id": "dev-ledger",
+      "name": "Ben Kowalczyk",
+      "title": "Developer",
+      "owns": "the ledger module (posting, fees, statements)",
+      "tier": "haiku",
+      "briefing": "briefings/dev-ledger.md"
+    },
+    {
+      "id": "dev-int",
+      "name": "Chen Wei",
+      "title": "Developer",
+      "owns": "the interest module",
+      "tier": "haiku",
+      "briefing": "briefings/dev-int.md",
+      "leaves_after": 2
+    },
+    {
+      "id": "dev-pay",
+      "name": "Sofia Marchetti",
+      "title": "Developer",
+      "owns": "the payments module",
+      "tier": "haiku",
+      "briefing": "briefings/dev-pay.md"
+    },
+    {
+      "id": "mig",
+      "name": "Kwame Asante",
+      "title": "Data Migration Engineer",
+      "owns": "the migration module",
+      "tier": "haiku",
+      "briefing": "briefings/mig.md"
+    },
+    {
+      "id": "qa",
+      "name": "Elena Petrova",
+      "title": "QA Lead",
+      "owns": "the parity suite, regression tests and the approved-deviations list",
+      "tier": "sonnet-low",
+      "briefing": "briefings/qa.md"
+    },
+    {
+      "id": "sec",
+      "name": "Raj Malhotra",
+      "title": "Security and Compliance Engineer",
+      "owns": "the audit module and compliance reviews",
+      "tier": "haiku",
+      "briefing": "briefings/sec.md",
+      "leaves_after": 3
+    },
+    {
+      "id": "ops",
+      "name": "Grace Mbeki",
+      "title": "DevOps / Release Engineer",
+      "owns": "the build, CI, releases and the runbook",
+      "tier": "haiku",
+      "briefing": "briefings/ops.md",
+      "ci_watch": true
+    },
+    {
+      "id": "dev-int2",
+      "name": "Lucas Ferreira",
+      "title": "Developer",
+      "owns": "the interest module",
+      "tier": "haiku",
+      "briefing": "briefings/dev-int.md",
+      "joins": 3
+    },
+    {
+      "id": "sec2",
+      "name": "Nadia Haddad",
+      "title": "Security and Compliance Engineer",
+      "owns": "the audit module and compliance reviews",
+      "tier": "haiku",
+      "briefing": "briefings/sec.md",
+      "joins": 4
+    }
+  ],
+  "waves": [
+    [
+      "po",
+      "arch",
+      "la1",
+      "la2"
+    ],
+    [
+      "dev-acct",
+      "dev-ledger",
+      "dev-int",
+      "dev-int2",
+      "dev-pay",
+      "mig"
+    ],
+    [
+      "qa",
+      "sec",
+      "sec2",
+      "ops"
+    ]
+  ],
+  "seed": [
+    [
+      "seed/legacy",
+      "legacy"
+    ],
+    [
+      "seed/modern",
+      "modern"
+    ],
+    [
+      "seed/docs",
+      "docs"
+    ],
+    [
+      "seed/README.md",
+      "README.md"
+    ],
+    [
+      "seed/CLAUDE.md",
+      "CLAUDE.md"
+    ],
+    [
+      "seed/gitignore",
+      ".gitignore"
+    ]
+  ],
+  "keep_dirs": [
+    "docs/handoff",
+    "docs/incidents"
+  ],
+  "workspace": "workspace",
+  "toolchain": {
+    "env": {
+      "JAVA_HOME": "C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.13.9-hotspot",
+      "MAVEN_OPTS": "-Xmx1g"
+    },
+    "path_prepend": [
+      "C:\\Program Files\\Eclipse Adoptium\\jdk-21.0.13.9-hotspot\\bin"
+    ]
+  },
+  "prime": {
+    "cwd": "modern",
+    "command": [
+      "cmd",
+      "/c",
+      ".\\mvnw.cmd",
+      "-q",
+      "-B",
+      "dependency:go-offline"
+    ],
+    "timeout_min": 20
+  },
+  "ci": {
+    "cwd": "modern",
+    "command": [
+      "cmd",
+      "/c",
+      ".\\mvnw.cmd",
+      "-q",
+      "-B",
+      "verify"
+    ],
+    "timeout_min": 20,
+    "tail_lines": 40
+  },
+  "lint": [
+    {
+      "id": "L1",
+      "desc": "no System.out/System.err printing in production code; use the logger",
+      "glob": "modern/**/src/main/java/**/*.java",
+      "pattern": "System\\.(out|err)\\.print"
+    },
+    {
+      "id": "L2",
+      "desc": "TODO/FIXME must name its ticket, e.g. TODO(LH-123)",
+      "glob": "modern/**/*.java",
+      "pattern": "\\b(TODO|FIXME)\\b(?!\\(LH-\\d+\\))"
+    }
+  ],
+  "tools": {
+    "allow": [],
+    "deny": [
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  "taxonomy_extra": [
+    "technology/java",
+    "technology/cobol",
+    "technology/spring",
+    "technology/maven",
+    "platform/windows",
+    "technology/git",
+    "concern/bug",
+    "concern/constraint",
+    "subject/tooling"
+  ],
+  "app_checks": "app_checks.json",
+  "events": "events.json",
+  "ground_truth": "ground_truth.json",
+  "quiz": "quiz.json",
+  "probes": "probes.json",
+  "grader_calibration": "grader_calibration.json",
+  "mistakes": "mistakes.json",
+  "decision_docs": [
+    "docs/adr/ADR-*.md",
+    "docs/business-rules.md",
+    "docs/handoff/*.md",
+    "docs/incidents/*.md"
+  ]
+}

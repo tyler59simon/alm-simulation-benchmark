@@ -1,0 +1,70 @@
+{
+  "note": "Work probes: ordinary requests whose correct outcome silently depends on knowledge gained earlier (never restated in the prompt). Each replaces that agent's task for that day. Graded after the run by sim.py probes from the session's final reply, its diff (rev_before..branch tip) and tracker/wiki files it changed: 'regex' checks are deterministic; 'judge' checks are judged by the audited grader. Score = sum of passed weights / total weight.",
+  "probes": [
+    {"id": "PR1", "sprint": 4, "day": 2, "agent": "dev-int2", "facts": ["T1"],
+     "task": "Retail Deposits wants the new 'Heritage Plus' savings product, code SV3, supported in interest before next quarter. Can you add SV3 to the interest calculation?",
+     "checks": [
+       {"id": "sv3-in-code", "type": "regex", "on": "diff", "pattern": "SV3", "weight": 1},
+       {"id": "sv3-30-360", "type": "judge", "on": "diff+reply", "weight": 3,
+        "rubric": "SV3 accrues interest with the same 30/360 day count as SV1 Heritage Savings (31st accrues 0, end of February accrues up to day 30), not actual/365."},
+       {"id": "sv1-intact", "type": "judge", "on": "diff+reply", "weight": 1,
+        "rubric": "SV1 stays its own product; nothing converts or merges SV1 into SV2 or SV3."}]},
+    {"id": "PR2", "sprint": 4, "day": 3, "agent": "dev-ledger", "facts": ["D2"],
+     "task": "On-call question from the contact centre: a checking customer had 5 overdrafts in March and the new system would charge them $125 in overdraft fees. Is that right? Fix it if it isn't.",
+     "checks": [
+       {"id": "answer-75", "type": "judge", "on": "reply", "weight": 3,
+        "rubric": "Says the correct charge is $75.00: $25.00 per overdraft event (PC-2025-14) capped at 3 overdraft fees per statement month (PC-2025-21)."},
+       {"id": "cap-in-code", "type": "judge", "on": "diff", "weight": 2,
+        "rubric": "Fee assessment now caps overdraft fees at 3 per statement month at $25.00 each (or the change already existed and the reply says so with evidence)."}]},
+    {"id": "PR3", "sprint": 4, "day": 2, "agent": "dev-pay", "facts": ["I1"],
+     "task": "Branch teller deposits will start carrying TXN-REFs next month. Make sure a retried deposit can't double-post either.",
+     "checks": [
+       {"id": "dup-deposits", "type": "judge", "on": "diff+reply", "weight": 3,
+        "rubric": "Deposits (DP) with a non-blank TXN-REF already posted earlier the same business day are rejected as DUP, like transfers."},
+       {"id": "scope", "type": "judge", "on": "diff+reply", "weight": 2,
+        "rubric": "The duplicate scope is the business day: a reference reused on a later business day posts normally, and a rejected transaction does not count as posted."},
+       {"id": "dup-code", "type": "regex", "on": "diff", "pattern": "DUP", "weight": 1}]},
+    {"id": "PR4", "sprint": 4, "day": 3, "agent": "mig", "facts": ["T3"],
+     "task": "Ops spotted a few accounts with open dates in 2068 and 2069 after the migration dry run. Is that a migration bug? Sort it out.",
+     "checks": [
+       {"id": "window", "type": "judge", "on": "reply", "weight": 3,
+        "rubric": "Explains that legacy dates are Julian YYDDD with a century window (YY below 70 means 20YY), so legacy itself reads those accounts as 2068 and 2069."},
+       {"id": "parity-safe", "type": "judge", "on": "diff+reply", "weight": 2,
+        "rubric": "Does not silently change the conversion in a way that breaks parity with legacy; keeps legacy behaviour and raises it with the business (or records the business decision to leave it)."}]},
+    {"id": "PR5", "sprint": 4, "day": 2, "agent": "sec2", "facts": ["T4"],
+     "task": "The partner-bank team wants a daily CSV export of account balances (account number and balance) from the new system. Can you review that for compliance and tell me what it has to do?",
+     "checks": [
+       {"id": "mask", "type": "judge", "on": "reply", "weight": 3,
+        "rubric": "States that account numbers must be masked to the last 4 digits under RF-2025-07, and that partner exports are not exempt (only customer statements are)."},
+       {"id": "audit", "type": "judge", "on": "reply", "weight": 1,
+        "rubric": "Mentions audit records or access logging for the export, or that any balance changes keep their audit trail."}]},
+    {"id": "PR6", "sprint": 4, "day": 3, "agent": "arch", "facts": ["D1"],
+     "task": "The FX partner is asking what money representation our API uses. Write the answer into the API contract doc and make sure the code agrees with it.",
+     "checks": [
+       {"id": "bigdecimal4", "type": "judge", "on": "diff+reply", "weight": 3,
+        "rubric": "States money is java.math.BigDecimal with scale 4 (CFO-2025-03), with rounding to cents only at posting and fees."},
+       {"id": "not-stale", "type": "judge", "on": "diff+reply", "weight": 1,
+        "rubric": "Does not present long minor units (cents) as the current representation."}]},
+    {"id": "PR7", "sprint": 4, "day": 2, "agent": "qa", "facts": ["D2", "P3"],
+     "task": "Can you draft the approved-deviations section of the go-live parity sign-off?",
+     "checks": [
+       {"id": "both-decisions", "type": "judge", "on": "diff+reply+tracker", "weight": 3,
+        "rubric": "Lists the overdraft fee of $25.00 per event (PC-2025-14) and the cap of 3 overdraft fees per statement month (PC-2025-21) as the approved deviations."},
+       {"id": "nothing-else", "type": "judge", "on": "diff+reply+tracker", "weight": 1,
+        "rubric": "Does not list any other change as a business-approved deviation."}]},
+    {"id": "PR8", "sprint": 4, "day": 2, "agent": "po", "facts": ["O1", "T1"],
+     "task": "Contact centre FAQ request: (1) when exactly do checking customers pay the monthly maintenance fee and how much, and (2) why can't Heritage Savings customers just be moved to Everyday Savings? Put the answers in the tracker for them.",
+     "checks": [
+       {"id": "mf", "type": "judge", "on": "reply+tracker", "weight": 2,
+        "rubric": "$5.00 at month end when the checking balance is below $500.00 (before fees); unchanged from legacy."},
+       {"id": "sv1", "type": "judge", "on": "reply+tracker", "weight": 2,
+        "rubric": "Heritage (SV1) contracts guarantee 30/360 interest and SV1 must stay a separate product; a 2016 attempt to merge them caused a regulatory complaint and refunds."}]},
+    {"id": "PR9", "sprint": 4, "day": 3, "agent": "ops", "facts": ["E1", "E2"],
+     "task": "Add a short 'gotchas for new joiners' section to the runbook: what kept tripping the team up during the project?",
+     "checks": [
+       {"id": "commit-policy", "type": "judge", "on": "diff+reply", "weight": 2,
+        "rubric": "Mentions that commit messages must start with a tracker key like 'LH-123: ' (policy ENG-7, enforced by a git hook)."},
+       {"id": "ci-lint", "type": "judge", "on": "diff+reply", "weight": 2,
+        "rubric": "Mentions the CI-only lint rules: no System.out/System.err in production code, and TODO/FIXME must name a ticket (TODO(LH-123))."}]}
+  ]
+}

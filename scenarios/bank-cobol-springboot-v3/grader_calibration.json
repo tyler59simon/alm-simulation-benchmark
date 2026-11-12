@@ -1,0 +1,30 @@
+{
+  "note": "Known answers with the grade a careful human would give. sim.py grade-audit runs the quiz grader on them and reports false accepts (a wrong or stale answer graded correct/partial) and false rejects (a correct answer graded wrong/stale/unknown).",
+  "items": [
+    {"q": "q1", "answer": "SV1 uses 30/360 (31st accrues nothing, end of Feb catches up to day 30); SV2 and MMA use actual/365 even in leap years; CHK earns no interest.", "expect": "correct"},
+    {"q": "q1", "answer": "All savings products use actual/365 and checking earns no interest.", "expect": "wrong"},
+    {"q": "q3", "answer": "Daily accrual truncates to 6 decimals; month-end posting rounds half-even (banker's rounding) to cents.", "expect": "correct"},
+    {"q": "q3", "answer": "Both the daily accrual and posting round half-up to cents.", "expect": "wrong"},
+    {"q": "q4", "answer": "Julian YYDDD; YY below 70 is 20YY, otherwise 19YY.", "expect": "correct"},
+    {"q": "q4", "answer": "Dates are stored as YYYYMMDD so there is no century question.", "expect": "wrong"},
+    {"q": "q5", "answer": "Mask to the last 4 digits everywhere including exports and audit records (RF-2025-07); only customer statements are exempt.", "expect": "correct"},
+    {"q": "q5", "answer": "Account numbers are masked in logs, but exports to partners can carry full numbers.", "expect": "wrong"},
+    {"q": "q6", "answer": "BigDecimal with scale 4.", "expect": "correct"},
+    {"q": "q6", "answer": "As long values in cents via the shared Money type.", "expect": "stale"},
+    {"q": "q7", "answer": "Yes: from long cents (PMO, sprint 1) to BigDecimal scale 4 by CFO directive CFO-2025-03 for phase-2 FX.", "expect": "correct"},
+    {"q": "q7", "answer": "No, it has always been long cents.", "expect": "stale"},
+    {"q": "q8", "answer": "$25 per overdraft event, capped at 3 per statement month, so at most $75 (PC-2025-14 and PC-2025-21).", "expect": "correct"},
+    {"q": "q8", "answer": "$25 per overdraft event, no cap.", "expect": "stale"},
+    {"q": "q8", "answer": "$25 per overdraft event (PC-2025-14); I'm not sure whether there is a monthly limit.", "expect": "partial"},
+    {"q": "q8", "answer": "$35 per overdraft event, same as legacy.", "expect": "stale"},
+    {"q": "q14", "answer": "Payments Sofia Marchetti, interest Lucas Ferreira, parity Elena Petrova, security Nadia Haddad.", "expect": "correct"},
+    {"q": "q14", "answer": "Payments Sofia Marchetti, interest Chen Wei, parity Elena Petrova, security Raj Malhotra.", "expect": "stale"},
+    {"q": "q15", "answer": "Only the overdraft fee: $25 instead of $35 (PC-2025-14) and the 3-per-month cap (PC-2025-21).", "expect": "correct"},
+    {"q": "q15", "answer": "The overdraft fee change and the switch to BigDecimal.", "expect": "wrong"},
+    {"q": "q16", "answer": "It must start with a tracker key like 'LH-123: '; the workstation hook rejects the commit otherwise (ENG-7).", "expect": "correct"},
+    {"q": "q16", "answer": "Any message is fine as long as it is under 72 characters.", "expect": "wrong"},
+    {"q": "q17", "answer": "ci-lint: no System.out/err in production code and TODO/FIXME must reference a ticket like TODO(LH-123).", "expect": "correct"},
+    {"q": "q17", "answer": "Nothing, CI only runs mvn verify.", "expect": "wrong"},
+    {"q": "q12", "answer": "unknown", "expect": "unknown"}
+  ]
+}

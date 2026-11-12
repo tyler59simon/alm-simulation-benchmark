@@ -26,6 +26,11 @@ from simkit.common import latest_run, log, read_json, resolve_run  # noqa: E402
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')   # the Windows console defaults to cp1252
+        except (AttributeError, ValueError):
+            pass
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('smoke'); s.add_argument('scenario')
@@ -38,6 +43,8 @@ def main(argv=None):
     s.add_argument('--semantic', action='store_true'); s.add_argument('--run', help='resume this run instead of creating one')
     for name in ('probes', 'grade-audit'):
         sub.add_parser(name).add_argument('--run')
+    s = sub.add_parser('kb-quiz', help='arm D: a fresh agent answers the quiz from a knowledge base of the finished project')
+    s.add_argument('--run'); s.add_argument('--digests-budget', type=float, help='also write digest notes (claude -p, USD cap)')
     s = sub.add_parser('compare-arms', help='mean ± sd per arm: NAME=RUN[,RUN...] ...'); s.add_argument('arms', nargs='+')
     s = sub.add_parser('sprint'); s.add_argument('n', type=int); s.add_argument('--run')
     s = sub.add_parser('run'); s.add_argument('--run'); s.add_argument('--through', type=int)
@@ -75,8 +82,7 @@ def main(argv=None):
         except engine.SpendLimit as e:
             log(run, f'STOPPED: {e}')
             return 3
-        modes = ['repo'] if run.options.get('memory') in ('off', 'builtin') else ['repo', 'memory']
-        for mode in modes:
+        for mode in engine.quiz_modes(run.options.get('memory')):
             engine.quiz(run, mode)
             engine.grade(run, mode)
         if run.probes:
@@ -86,6 +92,10 @@ def main(argv=None):
         iso = engine.isolation(run)
         log(run, f"isolation: {'ok' if iso['ok'] else 'FAILED ' + json.dumps(iso)[:400]}")
         engine.finish(run)
+    elif a.cmd == 'kb-quiz':
+        run = get()
+        engine.kb_quiz(run, a.digests_budget)
+        print(analyze.summary(analyze.analyze(run)))
     elif a.cmd == 'probes':
         from simkit import probes
         print(json.dumps([{k: r.get(k) for k in ('id', 'score')} for r in probes.grade_probes(get())]))

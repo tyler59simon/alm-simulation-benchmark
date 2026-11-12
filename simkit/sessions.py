@@ -106,7 +106,7 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
     sim_env = ({'SIM_RUN': str(run.dir), 'SIM_AGENT': agent['id'], 'SIM_AGENT_NAME': agent.get('name', agent['id']),
                 'SIM_WORKSPACE': str(run.workspace)} if run.workspace_enabled else {})
     env = clean_env({**tc_env, 'LIVING_MEMORY_ROOT': str(store), 'LIVING_MEMORY_LOG_LEVEL': 'debug',
-                     'LIVING_MEMORY_LOG_CONTENT': '1', **sim_env, **(extra_env or {})}, tc_path)
+                     'LIVING_MEMORY_LOG_CONTENT': '1', 'LIVING_MEMORY_HEADLESS': '1', **sim_env, **(extra_env or {})}, tc_path)
     env.update(mem_env)   # after clean_env, which strips CLAUDE* variables
     rev = lambda: run_rev(cwd)   # noqa: E731  the agent's HEAD before and after, so probes can grade what this session committed
     rev_before = rev()
