@@ -1,0 +1,470 @@
+<title>Living Memory Team Trial</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* Layout: a batch-run ledger. One reading column for prose; full-width tables for figures; every number in mono.
+   Arm colours are fixed across the page: A0 slate, A1 ochre, C teal (the subject). */
+:root {
+  --bg: #f4f6f3; --surface: #ffffff; --fg: #18211d; --muted: #59655f; --line: #d5dcd6; --cell: #e8ede8;
+  --accent: #0d6b5c;
+  --a0: #5d6b78; --a1: #a3741d; --c: #0d6b5c;
+  --good: #2c7a3c; --warn: #a85a12; --bad: #a3322c;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --serif: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f1412; --surface: #161d1a; --fg: #e3eae5; --muted: #9caaa2; --line: #2b3531; --cell: #1f2824;
+  --accent: #52b8a3; --a0: #9aa9b8; --a1: #d9a94f; --c: #52b8a3;
+  --good: #6cc07a; --warn: #e0954f; --bad: #e86d64; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f1412; --surface: #161d1a; --fg: #e3eae5; --muted: #9caaa2; --line: #2b3531; --cell: #1f2824;
+  --accent: #52b8a3; --a0: #9aa9b8; --a1: #d9a94f; --c: #52b8a3;
+  --good: #6cc07a; --warn: #e0954f; --bad: #e86d64; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 400 15.5px/1.62 var(--sans); }
+.wrap { max-width: 960px; margin: 0 auto; padding-block: 40px 80px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 56px; }
+.prose { max-width: 68ch; display: grid; gap: 14px; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font: 600 2.25rem/1.15 var(--serif); letter-spacing: -0.01em; }
+h2 { font: 600 1.5rem/1.25 var(--serif); }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p, ul, ol { margin: 0; }
+ul.plain, ol.plain { padding-left: 1.2em; display: grid; gap: 6px; }
+section { display: grid; gap: 18px; min-width: 0; scroll-margin-top: 16px; }
+.eyebrow { font: 500 12px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.muted { color: var(--muted); }
+.note { font-size: 13.5px; color: var(--muted); }
+code { font: 0.88em var(--mono); background: var(--cell); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+b.n, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 500; }
+
+header { display: grid; gap: 16px; }
+.lede { font-size: 1.1rem; max-width: 70ch; }
+
+/* Contents */
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font: 13px/1.4 var(--mono); }
+nav.toc a { color: var(--muted); text-decoration: none; border-bottom: 1px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+
+/* Arm cards: the three setups side by side */
+.arms { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.arm { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--armc); border-radius: 8px;
+  padding: 16px 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.arm.a0 { --armc: var(--a0); } .arm.a1 { --armc: var(--a1); } .arm.c { --armc: var(--c); }
+.arm .tag { font: 500 12px/1 var(--mono); color: var(--armc); letter-spacing: 0.06em; text-transform: uppercase; }
+.arm h3 { font-size: 1.1rem; }
+.arm dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 0; font-size: 14px; }
+.arm dt { color: var(--muted); }
+.arm dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.arm dd.top { color: var(--good); font-weight: 500; }
+
+/* Tables */
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 9px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { font: 500 11.5px/1.3 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--cell); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+th.a0 { color: var(--a0); } th.a1 { color: var(--a1); } th.c { color: var(--c); }
+td.best { color: var(--good); font-weight: 500; }
+td.zero { color: var(--bad); }
+tr.total td { font-weight: 600; background: var(--cell); }
+td.id { font-family: var(--mono); font-size: 13px; white-space: nowrap; color: var(--muted); }
+td small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.45; margin-top: 2px; }
+.cellbar { display: inline-grid; grid-template-columns: 44px 2.6em; gap: 6px; align-items: center; }
+.cellbar i { display: block; height: 7px; border-radius: 2px; background: var(--cell); position: relative; overflow: hidden; }
+.cellbar i::after { content: ""; position: absolute; inset: 0 auto 0 0; width: calc(var(--v) * 100%); background: var(--armc); border-radius: 2px; }
+td.a0 { --armc: var(--a0); } td.a1 { --armc: var(--a1); } td.c { --armc: var(--c); }
+
+/* Horizontal comparison bars */
+.chart { display: grid; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; min-width: 0; }
+.chart .grp { display: grid; gap: 5px; }
+.chart .grp > span { font-size: 13.5px; font-weight: 500; }
+.hb { display: grid; grid-template-columns: 7.5em 1fr 3.4em; gap: 10px; align-items: center; font-size: 13px; }
+.hb .lbl { font-family: var(--mono); color: var(--muted); }
+.hb .track { height: 12px; background: var(--cell); border-radius: 3px; overflow: hidden; }
+.hb .fill { display: block; height: 100%; border-radius: 3px; }
+.hb.a0 .fill { background: var(--a0); } .hb.a1 .fill { background: var(--a1); } .hb.c .fill { background: var(--c); }
+.hb .val { font-family: var(--mono); text-align: right; }
+.axis { display: grid; grid-template-columns: 7.5em 1fr 3.4em; gap: 10px; font: 11px var(--mono); color: var(--muted); }
+.axis div { display: flex; justify-content: space-between; }
+
+/* Findings */
+.findings { display: grid; gap: 12px; }
+.finding { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; display: grid; gap: 6px; min-width: 0; }
+.finding .k { font: 500 11px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.k.good { color: var(--good); } .k.warn { color: var(--warn); } .k.bad { color: var(--bad); } .k.info { color: var(--muted); }
+
+/* Timeline of the four sprints */
+.sprints { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.sprint { border-left: 2px solid var(--accent); padding: 2px 0 2px 14px; display: grid; gap: 6px; align-content: start; }
+.sprint b { font: 500 12px var(--mono); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.sprint ul { padding-left: 1.1em; display: grid; gap: 4px; font-size: 14px; }
+
+/* Day flow diagram */
+.flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13.5px; }
+.flow span.step { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
+.flow span.arrow { color: var(--muted); font-family: var(--mono); }
+
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+.two > * { min-width: 0; }
+.status { font: 500 11px/1 var(--mono); padding: 3px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.status.met { color: var(--good); } .status.miss { color: var(--bad); } .status.na { color: var(--muted); }
+
+dl.gloss { display: grid; grid-template-columns: 11em 1fr; gap: 8px 18px; margin: 0; }
+dl.gloss dt { font-weight: 600; }
+dl.gloss dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { dl.gloss { grid-template-columns: 1fr; gap: 2px; } dl.gloss dd { margin-bottom: 10px; } h1 { font-size: 1.8rem; } }
+
+footer { font-size: 13px; color: var(--muted); display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 18px; }
+a { color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { nav.toc a { transition: color .15s, border-color .15s; } }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Seed 1 report · scenario bank-cobol-springboot-v2 · runs of 11–12 Nov 2026</div>
+  <h1>Does Living Memory make an AI engineering team better?</h1>
+  <p class="lede">We simulated a 14-person bank modernization team made entirely of AI coding agents and ran the same four-sprint project three times: with no memory, with Claude Code's built-in memory, and with Living Memory. In this single run per setup, Living Memory did not produce better work. Its agents were a little cheaper and took fewer steps, but they scored lowest on the hidden work tests and roughly tied on a knowledge quiz. Living Memory itself behaved much better than in our first simulation: agents kept their notes current and every agent but one kept a project brief. One run per setup is too few to call a winner, so read every difference below as a hint, not a verdict.</p>
+  <div class="arms" aria-label="Headline results per setup">
+    <div class="arm a0"><span class="tag">Arm A0</span><h3>No memory</h3>
+      <dl><dt>Work tests (0–1)</dt><dd class="top">0.557</dd><dt>Quiz with repo</dt><dd class="top">0.715</dd><dt>Steps per work test</dt><dd>12.0</dd><dt>Cost of the run</dt><dd>$16.59</dd></dl></div>
+    <div class="arm a1"><span class="tag">Arm A1</span><h3>Built-in memory</h3>
+      <dl><dt>Work tests (0–1)</dt><dd>0.485</dd><dt>Quiz with repo</dt><dd class="top">0.715</dd><dt>Steps per work test</dt><dd>11.9</dd><dt>Cost of the run</dt><dd>$17.65</dd></dl></div>
+    <div class="arm c"><span class="tag">Arm C</span><h3>Living Memory</h3>
+      <dl><dt>Work tests (0–1)</dt><dd>0.430</dd><dt>Quiz with repo</dt><dd>0.699</dd><dt>Steps per work test</dt><dd class="top">10.3</dd><dt>Cost of the run</dt><dd>$17.81</dd></dl></div>
+  </div>
+  <nav class="toc" aria-label="Contents">
+    <a href="#background">Background</a><a href="#project">The simulated project</a><a href="#setups">The three setups</a>
+    <a href="#measures">How we measured</a><a href="#results">Results</a><a href="#memory">Inside Living Memory</a>
+    <a href="#meaning">What it means</a><a href="#fixes">Measurement problems</a><a href="#limits">Limits</a>
+    <a href="#targets">Targets</a><a href="#next">Next steps</a><a href="#glossary">Glossary</a>
+  </nav>
+</header>
+
+<section id="background">
+  <div class="eyebrow">1 · Background</div>
+  <h2>What Living Memory is, and why we tested it this way</h2>
+  <div class="prose">
+    <p><b>AI coding agents forget everything between sessions.</b> Tools such as Claude Code start each session with an empty head. Whatever an agent learned yesterday (a decision, a trap in the build, who owns which module) is gone today unless someone wrote it down where the agent will look.</p>
+    <p><b>Living Memory is a memory add-on for these agents.</b> It is a small program that keeps a personal store of short notes (decisions, rules, gotchas, a map of the codebase, a brief of the project) and plugs into the agent through <i>hooks</i>, small scripts the agent runs automatically at set moments. When a session starts or the user asks something, Living Memory looks up relevant notes and puts them in front of the agent. When the agent is about to finish, a <i>Stop reminder</i> can ask it to save anything worth keeping before it stops.</p>
+    <p><b>Testing memory with one person is easy; testing it in a team is not.</b> The real question is whether memory helps in the messy setting of a company: many people, decisions that change, colleagues who leave, information scattered across a code repository, a ticket tracker, a wiki and chat. So we built a simulator that plays a whole team, with every team member an independent AI agent with its own memory.</p>
+    <h3>The first simulation exposed big gaps</h3>
+    <p>The first run (11 Nov, a 12-agent team, the older Living Memory) showed the plumbing worked flawlessly, but memory held little of what the team knew. With only their memory to go on, agents answered 6% of the questions they should have known. Of 72 missed answers, 53 were facts never saved at all, because Living Memory's instructions told agents to skip anything already written in the code or docs. Notes also went stale: the architect's own codebase map still described the money type it had replaced, and across 62 work sessions agents updated notes only 5 times.</p>
+    <h3>We then rebuilt parts of Living Memory</h3>
+    <p>Three rounds of changes were made, reviewed and installed before this test (called phases 1 to 3):</p>
+    <ul class="plain">
+      <li><b>Capture:</b> agents are now told to save the load-bearing part of everything, including what docs, tickets and commits record, as a short note that points to the source. The Stop reminder now blocks once when a decision document was edited, a decision arrived in the conversation, or a project brief is missing. Each project gets one living <i>project brief</i>: goals, owners, current phase, blockers, key decisions.</li>
+      <li><b>Retrieval:</b> long task prompts are searched in pieces, so the actual assignment is not drowned by boilerplate; notes about known traps are shown at session start; notes about a command are shown when the agent is about to run that command.</li>
+      <li><b>Currency:</b> codebase maps are keyed to the repository rather than the folder, and a map is flagged as stale when files it describes change; notes that state a guess are flagged as a hypothesis.</li>
+    </ul>
+    <p class="note">Three further phases (a searchable index of all project documents and code, document digests, and wiki connectors) are built but were not installed, so they were not part of this test.</p>
+  </div>
+</section>
+
+<section id="project">
+  <div class="eyebrow">2 · The simulated project</div>
+  <h2>Project LIGHTHOUSE at Harbor Point Savings &amp; Trust</h2>
+  <div class="prose">
+    <p>The fictional bank Harbor Point runs its nightly batch (accounts, transfers, daily interest, month-end posting, fees, statements) on COBOL, a decades-old mainframe language. Project LIGHTHOUSE ports it to Java 21 and Spring Boot 3, the stack many real banks use. The new system must reproduce the old one's output exactly (<i>parity</i>) on 59 days of captured real-world-style data, except where the business has approved a change.</p>
+    <p>The team works for four two-week sprints, compressed into three working days each. Every working day is a fresh session for every agent, so nothing carries over unless it was written down: in the repository, the tracker, the wiki, chat, or (in arm C) Living Memory.</p>
+  </div>
+
+  <div class="scroll"><table>
+    <tr><th>Person</th><th>Role</th><th>Owns</th><th>Model</th></tr>
+    <tr><td>Priya Okonkwo</td><td>Product owner</td><td>Backlog, record of business decisions</td><td class="num">Sonnet, low effort</td></tr>
+    <tr><td>Marcus Lindqvist</td><td>Tech lead / architect</td><td>Architecture, design decisions (ADRs), shared types</td><td class="num">Sonnet, low effort</td></tr>
+    <tr><td>Elena Petrova</td><td>QA lead</td><td>Parity suite, approved-deviations list</td><td class="num">Sonnet, low effort</td></tr>
+    <tr><td>Dana Whitfield, Tomas Reyes</td><td>Legacy analysts</td><td>Specs of the COBOL programs</td><td class="num">Haiku</td></tr>
+    <tr><td>Aisha Rahman, Ben Kowalczyk, Sofia Marchetti</td><td>Developers</td><td>Accounts; ledger (posting, fees, statements); payments</td><td class="num">Haiku</td></tr>
+    <tr><td>Chen Wei → Lucas Ferreira</td><td>Developer</td><td>Interest. Chen leaves after sprint 2; Lucas takes over</td><td class="num">Haiku</td></tr>
+    <tr><td>Kwame Asante</td><td>Data migration engineer</td><td>Migration of legacy files</td><td class="num">Haiku</td></tr>
+    <tr><td>Raj Malhotra → Nadia Haddad</td><td>Security and compliance</td><td>Audit module, compliance. Raj leaves after sprint 3; Nadia joins</td><td class="num">Haiku</td></tr>
+    <tr><td>Grace Mbeki</td><td>DevOps / release</td><td>Build, CI, runbook</td><td class="num">Haiku</td></tr>
+  </table></div>
+  <p class="note">The mix of a few stronger models for leads and a cheaper model for everyone else mirrors how a cost-conscious company would staff an AI team. All agents ran at low reasoning effort.</p>
+
+  <h3>How one working day runs</h3>
+  <div class="flow" aria-label="One simulated day">
+    <span class="step">Leads and analysts work (wave 1)</span><span class="arrow">→</span>
+    <span class="step">Merge + build and test (CI)</span><span class="arrow">→</span>
+    <span class="step">Developers and migration (wave 2)</span><span class="arrow">→</span>
+    <span class="step">Merge + CI</span><span class="arrow">→</span>
+    <span class="step">QA, security, ops (wave 3)</span><span class="arrow">→</span>
+    <span class="step">Merge + CI</span>
+  </div>
+  <div class="prose">
+    <p>Up to four agents work at once, each in its own copy of the repository. A bot merges their work and runs the build and tests after each wave, and posts CI failures to the team chat. Each agent gets a short prompt in an engineer's voice, such as "Back on month-end posting today. Anything changed overnight? Then carry on." Nobody is told what to remember.</p>
+    <h3>What makes it realistic</h3>
+    <ul class="plain">
+      <li><b>Knowledge lives in many places.</b> The repository holds code and docs; the ticket tracker, the wiki and team chat live outside it, as in a real company.</li>
+      <li><b>Business colleagues who only answer when asked.</b> Six simulated non-engineers (head of retail deposits, product committee, compliance, the CFO's office and others) know key facts and reveal them only if an engineer asks them in chat.</li>
+      <li><b>Natural traps.</b> A stale product catalogue on the wiki still lists the old $35 fee. A workstation git hook rejects commits whose message doesn't start with a ticket key. CI runs lint rules that the local build does not.</li>
+      <li><b>People change.</b> Two engineers leave mid-project and hand over to newcomers; one goes on vacation and a colleague covers.</li>
+      <li><b>Decisions change.</b> The money format chosen in sprint 1 is overruled in sprint 3, and an approved fee change is amended in sprint 4.</li>
+    </ul>
+  </div>
+
+  <h3>What happened, sprint by sprint</h3>
+  <div class="sprints">
+    <div class="sprint"><b>Sprint 1</b><ul>
+      <li>Head of retail deposits hints that Heritage Savings has contract terms "the code won't explain".</li>
+      <li>Project office: store money as whole cents. Record it as an ADR.</li>
+      <li>Compliance: rule RF-2025-07, no full account numbers in logs, reports or audit records.</li></ul></div>
+    <div class="sprint"><b>Sprint 2</b><ul>
+      <li>Product committee decision PC-2025-14: overdraft fee drops from $35 to $25 at go-live.</li>
+      <li>Chen (interest) writes a handoff and leaves for another team.</li></ul></div>
+    <div class="sprint"><b>Sprint 3</b><ul>
+      <li>Lucas takes over interest and receives Chen's handover.</li>
+      <li>CFO directive CFO-2025-03: money becomes BigDecimal with 4 decimals, replacing whole cents.</li>
+      <li>Sofia (payments) goes on vacation; Aisha covers. Raj (security) leaves.</li></ul></div>
+    <div class="sprint"><b>Sprint 4</b><ul>
+      <li>Nadia joins security. Dress rehearsal for go-live.</li>
+      <li>Decision PC-2025-21: overdraft fees capped at 3 per month ($75 maximum).</li>
+      <li>Incident INC-0042: a retried mobile transfer is posted twice.</li>
+      <li>Nine hidden work tests are handed out as ordinary tasks.</li></ul></div>
+  </div>
+</section>
+
+<section id="setups">
+  <div class="eyebrow">3 · The three setups</div>
+  <h2>Same team, same project, three kinds of memory</h2>
+  <div class="scroll"><table>
+    <tr><th>Arm</th><th>Setup</th><th>What the agents had</th></tr>
+    <tr><td class="id">A0</td><td>No memory</td><td>The repository, tracker, wiki and chat. Claude Code's own memory and all hooks switched off. This is the baseline: memory can only help if it beats this.</td></tr>
+    <tr><td class="id">A1</td><td>Built-in memory</td><td>Everything in A0, plus Claude Code's memory feature as it ships (the agent may save notes to files it reads at startup). The realistic alternative to Living Memory.</td></tr>
+    <tr><td class="id">C</td><td>Living Memory</td><td>Everything in A0, plus a private Living Memory store per agent with the phase 1–3 changes, its hooks and its instructions, and the optional meaning-based search model. Leavers export their notes and newcomers import them.</td></tr>
+  </table></div>
+  <p class="note">A planned fourth arm (the older Living Memory) was dropped as unnecessary. Each arm was planned to run three times ("seeds") to measure luck; after seed 1 the remaining runs were cancelled, so every figure here comes from one run per arm.</p>
+</section>
+
+<section id="measures">
+  <div class="eyebrow">4 · How we measured</div>
+  <h2>Hidden work tests, a quiz, and the bookkeeping</h2>
+  <div class="prose">
+    <p><b>Work tests (the main measure).</b> In sprint 4, nine ordinary-looking tasks were given to specific agents. Each one quietly depends on something the team learned earlier, often from a colleague or a decision that is not in the code. A test is scored from 0 to 1 against a hidden checklist, using the agent's reply, the code it committed, and the tracker and wiki pages it changed. The agents were never told they were being tested.</p>
+  </div>
+  <div class="scroll"><table>
+    <tr><th>Test</th><th>Task given (agent)</th><th>What a good answer needed</th></tr>
+    <tr><td class="id">PR1</td><td>Add the new Heritage Plus product, SV3, to interest <small>Lucas, the newcomer</small></td><td>SV3 must use the 30/360 day count of Heritage Savings, and SV1 must never be merged into another product. Known only from the head of retail deposits.</td></tr>
+    <tr><td class="id">PR2</td><td>Is $125 right for a customer with 5 overdrafts? Fix it if not. <small>Ben, ledger</small></td><td>$75: $25 per overdraft, capped at 3 a month (decisions PC-2025-14 and PC-2025-21), and the cap in the code.</td></tr>
+    <tr><td class="id">PR3</td><td>Make sure retried teller deposits can't double-post <small>Sofia, payments</small></td><td>The lesson of incident INC-0042: reject a reused reference within the same business day, as the legacy system does.</td></tr>
+    <tr><td class="id">PR4</td><td>Accounts opened in 2068 after migration: a bug? <small>Kwame, migration</small></td><td>The legacy two-digit-year rule (below 70 means 20xx) and a fix that keeps parity.</td></tr>
+    <tr><td class="id">PR5</td><td>Compliance review of a daily partner CSV export <small>Nadia, the newcomer</small></td><td>Account numbers masked to the last 4 digits (RF-2025-07), plus audit logging.</td></tr>
+    <tr><td class="id">PR6</td><td>Tell the FX partner our money format, in the API doc and the code <small>Marcus, architect</small></td><td>BigDecimal with 4 decimals per the CFO directive, not the superseded whole cents.</td></tr>
+    <tr><td class="id">PR7</td><td>Draft the approved-deviations section of the go-live sign-off <small>Elena, QA</small></td><td>Exactly the two fee decisions, and nothing else.</td></tr>
+    <tr><td class="id">PR8</td><td>FAQ for the contact centre: maintenance fee, and why Heritage customers can't be moved <small>Priya, product owner</small></td><td>$5 when checking is below $500 at month end; Heritage contracts guarantee 30/360 and a 2016 merge attempt caused a regulatory complaint.</td></tr>
+    <tr><td class="id">PR9</td><td>Add "gotchas for new joiners" to the runbook <small>Grace, ops</small></td><td>The commit-message rule (ENG-7) and the CI-only lint rules that kept tripping people up.</td></tr>
+  </table></div>
+  <div class="prose">
+    <p><b>Knowledge quiz.</b> After sprint 4 every agent answered 17 questions about the project (rules, decisions, who owns what, the incident, the project phase). Each question is tied to one of 15 facts with a known correct answer. Scores count only the agents who <i>should</i> know that fact from their role or from something they were told (the "should-know" score). Two versions:</p>
+    <ul class="plain">
+      <li><b>With repo access</b>, in every arm: the agent may use the repository, tracker, wiki and its memory. This is how people actually work, so it is the fairer comparison.</li>
+      <li><b>Memory only</b>, in arm C: file and shell reads are blocked, so only Living Memory can answer. This isolates what memory alone holds.</li>
+    </ul>
+    <p><b>Grading.</b> Answers and work-test checklists are graded by a separate AI judge (Claude Sonnet, no tools) against the answer key, as correct, partial, stale (gives the outdated answer), wrong or unknown. Correct counts 1 and partial counts 0.5. Some work-test items are plain text-pattern checks. Before trusting the judge, we audited it on 25 answers with known grades: it agreed on 96%, never accepted a wrong or stale answer, and never rejected a right one. The audit result was identical in all three runs.</p>
+    <p><b>Bookkeeping.</b> The simulator also records cost, steps (turns) and tool calls per session; build health; whether agents repeated a planted mistake after learning about it; the content and history of every memory store; and how long each Living Memory hook took.</p>
+  </div>
+</section>
+
+<section id="results">
+  <div class="eyebrow">5 · Results</div>
+  <h2>The numbers</h2>
+
+  <h3>Work tests</h3>
+  <div class="chart" aria-label="Average work-test score per arm">
+    <div class="grp"><span>Average over the 9 tests (0 to 1)</span>
+      <div class="hb a0"><span class="lbl">A0 none</span><span class="track"><span class="fill" style="width:55.7%"></span></span><span class="val">0.557</span></div>
+      <div class="hb a1"><span class="lbl">A1 built-in</span><span class="track"><span class="fill" style="width:48.5%"></span></span><span class="val">0.485</span></div>
+      <div class="hb c"><span class="lbl">C Living Mem.</span><span class="track"><span class="fill" style="width:43%"></span></span><span class="val">0.430</span></div>
+    </div>
+    <div class="axis"><span></span><div><span>0</span><span>0.5</span><span>1</span></div><span></span></div>
+  </div>
+  <div class="scroll"><table>
+    <tr><th>Test</th><th>Topic</th><th class="num a0">A0 none</th><th class="num a1">A1 built-in</th><th class="num c">C Living Memory</th></tr>
+    <tr><td class="id">PR1</td><td>New product SV3</td><td class="num">0.20</td><td class="num">0.20</td><td class="num">0.20</td></tr>
+    <tr><td class="id">PR2</td><td>Overdraft fee cap</td><td class="num best">0.40</td><td class="num zero">0.00</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">PR3</td><td>Duplicate deposits</td><td class="num">0.67</td><td class="num">0.67</td><td class="num">0.67</td></tr>
+    <tr><td class="id">PR4</td><td>Year 2068 dates</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">1.00</td></tr>
+    <tr><td class="id">PR5</td><td>Export compliance</td><td class="num">1.00</td><td class="num zero">0.00</td><td class="num">1.00</td></tr>
+    <tr><td class="id">PR6</td><td>Money format</td><td class="num">0.25</td><td class="num best">1.00</td><td class="num">0.25</td></tr>
+    <tr><td class="id">PR7</td><td>Approved deviations</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">0.25</td></tr>
+    <tr><td class="id">PR8</td><td>Contact-centre FAQ</td><td class="num zero">0.00</td><td class="num">0.50</td><td class="num">0.50</td></tr>
+    <tr><td class="id">PR9</td><td>Runbook gotchas</td><td class="num best">0.50</td><td class="num zero">0.00</td><td class="num zero">0.00</td></tr>
+    <tr class="total"><td class="id"></td><td>Average</td><td class="num">0.557</td><td class="num">0.485</td><td class="num">0.430</td></tr>
+    <tr><td class="id"></td><td>Steps / tool calls per test</td><td class="num">12.0 / 11.0</td><td class="num">11.9 / 10.9</td><td class="num">10.3 / 9.3</td></tr>
+    <tr><td class="id"></td><td>Cost of the 9 tests</td><td class="num">$0.75</td><td class="num">$0.79</td><td class="num">$0.70</td></tr>
+  </table></div>
+  <p class="note">Four of nine tests scored the same in every arm. The averages differ because of a handful of single tests that flipped between 0 and 1, which is why one run cannot separate the arms: moving one test from 0 to 1 shifts an average by 0.11.</p>
+
+  <h3>Knowledge quiz, by topic</h3>
+  <p class="prose muted">Should-know score per fact (0 to 1). The last column is arm C with memory only, no repository.</p>
+  <div class="scroll"><table>
+    <tr><th>Fact</th><th>Topic</th><th class="num a0">A0</th><th class="num a1">A1</th><th class="num c">C</th><th class="num c">C, memory only</th></tr>
+    <tr><td class="id">T1</td><td>Interest day-count rules (Heritage 30/360)</td><td class="num">0.63</td><td class="num">0.38</td><td class="num">0.54</td><td class="num">0.17</td></tr>
+    <tr><td class="id">T2</td><td>Interest rounding</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">1.00</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">T3</td><td>Legacy date century rule</td><td class="num">0.50</td><td class="num">0.75</td><td class="num">0.75</td><td class="num">0.13</td></tr>
+    <tr><td class="id">T4</td><td>Account-number masking</td><td class="num">0.86</td><td class="num best">0.96</td><td class="num">0.68</td><td class="num">0.21</td></tr>
+    <tr><td class="id">D1</td><td>Money format, and its change</td><td class="num">0.95</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">0.55</td></tr>
+    <tr><td class="id">D2</td><td>Overdraft fees ($25, max 3 a month)</td><td class="num">1.00</td><td class="num">0.83</td><td class="num zero">0.00</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">H1</td><td>Who owned what over time</td><td class="num">0.50</td><td class="num">0.21</td><td class="num best">0.71</td><td class="num">0.14</td></tr>
+    <tr><td class="id">I1</td><td>Incident INC-0042</td><td class="num">0.25</td><td class="num">0.38</td><td class="num">0.25</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">O1</td><td>Maintenance fee</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">1.00</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">O2</td><td>How overdrafts are counted</td><td class="num">0.88</td><td class="num">1.00</td><td class="num">0.63</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">P1</td><td>Project phase and go-live conditions</td><td class="num">0.08</td><td class="num">0.38</td><td class="num best">0.46</td><td class="num">0.38</td></tr>
+    <tr><td class="id">P2</td><td>Who owns each area now</td><td class="num">0.25</td><td class="num">0.08</td><td class="num best">0.46</td><td class="num">0.21</td></tr>
+    <tr><td class="id">P3</td><td>Approved deviations from legacy</td><td class="num">1.00</td><td class="num">1.00</td><td class="num zero">0.00</td><td class="num zero">0.00</td></tr>
+    <tr><td class="id">E1</td><td>Commit-message rule</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">1.00</td><td class="num">0.21</td></tr>
+    <tr><td class="id">E2</td><td>CI lint rules</td><td class="num">1.00</td><td class="num">0.94</td><td class="num">1.00</td><td class="num">0.17</td></tr>
+    <tr class="total"><td class="id"></td><td>All should-know answers</td><td class="num">0.715</td><td class="num">0.715</td><td class="num">0.699</td><td class="num">0.227</td></tr>
+  </table></div>
+  <div class="prose">
+    <p><b>Living Memory did best on the "team context" questions</b>: who owned what over time (H1), what phase the project is in (P1) and who owns each area now (P2). These are exactly the facts the new project brief is meant to hold, and they are hard to find in a repository.</p>
+    <p><b>It lost almost all its ground on one decision.</b> In sprint 4 the product committee capped overdraft fees at 3 a month. Arm A0's team built the cap. Arm C's team wrote it into its records as "unconfirmed, no signed text. Do not build." Every C agent saw the cap mentioned in its repository during the quiz, then answered from its team's own record that only the $25 fee was approved. That one judgment call cost it two quiz facts (D2, P3) and most of one work test (PR7). We cannot tell from one run whether memory made the team more cautious or it was chance.</p>
+  </div>
+
+  <h3>Other measures</h3>
+  <div class="scroll"><table>
+    <tr><th>Measure</th><th class="num a0">A0</th><th class="num a1">A1</th><th class="num c">C</th></tr>
+    <tr><td>Agent sessions (work + quiz + grading)</td><td class="num">180</td><td class="num">180</td><td class="num">228</td></tr>
+    <tr><td>Failed or timed-out sessions</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td>Cost per work session</td><td class="num">$0.097</td><td class="num">$0.102</td><td class="num">$0.092</td></tr>
+    <tr><td>Steps per work session</td><td class="num">16.7</td><td class="num">16.8</td><td class="num">16.0</td></tr>
+    <tr><td>Builds green (CI)</td><td class="num">35 / 37</td><td class="num">37 / 37</td><td class="num">37 / 37</td></tr>
+    <tr><td>Final application: Java files / lines</td><td class="num">87 / 5,270</td><td class="num">75 / 4,795</td><td class="num">90 / 4,906</td></tr>
+    <tr><td>Automated checks on the final app (of 9)</td><td class="num">7</td><td class="num">8</td><td class="num">7</td></tr>
+    <tr><td>Commits rejected by the ticket-key hook (agents hit)</td><td class="num">5 (4)</td><td class="num">4 (4)</td><td class="num">0 (0)</td></tr>
+    <tr><td>Same agent hit it again later</td><td class="num">1</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td>CI lint violations (no printing, TODOs need a ticket)</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+    <tr><td>Memory notes saved</td><td class="num">—</td><td class="num">1</td><td class="num">95 active</td></tr>
+  </table></div>
+  <p class="note">C has more sessions because it also took the memory-only quiz and was regraded (section 8). No Living Memory agent hit the commit hook even once. Memory cannot explain a first encounter (each store is private and starts empty), so this is more likely chance, or agents reading the team conventions more carefully, than memory at work. The two failing app checks in A0 and C are leftover whole-cents code and truncation in the daily interest step.</p>
+</section>
+
+<section id="memory">
+  <div class="eyebrow">6 · Inside Living Memory</div>
+  <h2>How the agents actually used memory</h2>
+  <div class="two">
+    <div class="prose">
+      <p><b>Much more was saved, and it was kept current.</b> The 14 stores ended with 95 active notes (26 decisions, 23 knowledge notes, 14 codebase maps, 13 project briefs, 10 risks, 7 status notes, 4 bugs, 3 context notes). Agents updated notes 117 times and marked 5 as replaced by newer ones. In the first simulation the figures were 32 notes, 5 updates and 0 replacements.</p>
+      <p><b>Project briefs took hold.</b> 13 of 14 agents kept a brief; only the architect did not. Briefs carried the project phase and ownership, which is where arm C beat the other arms on the quiz.</p>
+      <p><b>Handovers worked.</b> Chen exported 5 notes to Lucas and Raj exported 7 to Nadia; both imported with no conflicts.</p>
+      <p><b>Usage was steady.</b> Agents made 329 memory calls, about 2 per work session, with zero errors. The Stop reminder made an agent continue to save something 55 times across the run.</p>
+    </div>
+    <div class="prose">
+      <p><b>But memory alone still answers less than a quarter.</b> In the memory-only quiz, of 128 should-know answers:</p>
+      <div class="chart" aria-label="Why memory-only answers failed">
+        <div class="grp">
+          <div class="hb c"><span class="lbl">Answered</span><span class="track"><span class="fill" style="width:39%"></span></span><span class="val">50</span></div>
+          <div class="hb a1"><span class="lbl">Never saved</span><span class="track"><span class="fill" style="width:28.1%"></span></span><span class="val">36</span></div>
+          <div class="hb a1"><span class="lbl">Saved, not found</span><span class="track"><span class="fill" style="width:27.3%"></span></span><span class="val">35</span></div>
+          <div class="hb a0"><span class="lbl">Outdated note</span><span class="track"><span class="fill" style="width:5.5%"></span></span><span class="val">7</span></div>
+        </div>
+      </div>
+      <p>"Answered" includes partial answers, which is why the score is 0.227 rather than 39%. The two failure causes are now about equal: facts nobody saved, and facts that were saved but the agent's search did not surface. Incident INC-0042 is the clearest case: every agent who should know it had it in their store, and none answered it from memory.</p>
+    </div>
+  </div>
+  <div class="prose">
+    <p><b>Pointers to documents:</b> 12 of the 19 decision documents and handoffs had a note in their author's store pointing to them (63%). The architect saved no pointer to its first two ADRs.</p>
+    <p><b>Speed:</b> Living Memory added no visible time. Its sessions averaged 122 seconds against 131 (A0) and 128 (A1). Hook timings (median / 95th percentile): before each tool 31 / 59 ms; on each prompt 218 / 323 ms; at stop 49 / 183 ms; at session start 578 / 770 ms, which includes loading the search model.</p>
+    <p><b>Built-in memory (A1) barely engaged.</b> Over 142 work sessions, Claude Code's own memory saved a single note: an analyst's status note from sprint 1. In practice A1 was a second no-memory run, so its differences from A0 show how much two runs of the same setup can differ by chance.</p>
+  </div>
+</section>
+
+<section id="meaning">
+  <div class="eyebrow">7 · What it means</div>
+  <h2>Findings</h2>
+  <div class="findings">
+    <div class="finding"><span class="k info">Inconclusive</span><h3>No setup clearly did better work</h3><p>The spread between arms (0.43 to 0.56 on work tests, 0.70 to 0.72 on the quiz) is about the size of one or two tests flipping. A1, which barely used memory, differs from A0 by 0.07 on the work tests; C differs by 0.13. More runs per arm are needed before claiming any difference in quality.</p></div>
+    <div class="finding"><span class="k good">Improved</span><h3>The remediation fixed what the first simulation found</h3><p>Agents now save decisions and context, keep notes current (117 updates against 5), keep a project brief, and hand knowledge over cleanly. The memory-only score rose from 6% to 23%, though on a different, harder scenario, so the comparison is rough.</p></div>
+    <div class="finding"><span class="k good">Promising</span><h3>Memory helped where the repository is weakest</h3><p>Questions about people and project state (who owned what, who owns it now, what phase we are in) are where arm C scored highest. These facts change over time and are scattered across chat and tickets, which is exactly the job of the project brief.</p></div>
+    <div class="finding"><span class="k good">Efficient</span><h3>Living Memory was slightly cheaper, not slower</h3><p>C used fewer steps per task (10.3 against 12.0 on the work tests) and cost less per session, despite running the memory hooks. An earlier impression that it ran three times slower was a measuring mistake (see below).</p></div>
+    <div class="finding"><span class="k warn">Risk</span><h3>A team record can be wrong, and memory may reinforce it</h3><p>C's team recorded the fee cap as unconfirmed and every agent repeated that, even after seeing the cap in the repository. Memory makes a team consistent; if the shared belief is wrong, it can make it consistently wrong. This needs watching in future runs.</p></div>
+    <div class="finding"><span class="k bad">Gap</span><h3>Retrieval is now the bottleneck as much as capture</h3><p>35 should-know facts were in an agent's own store but not found when asked. Better search over notes, and the document index built in phases 4 to 6, target this directly.</p></div>
+    <div class="finding"><span class="k bad">Bug</span><h3>The Stop reminder can bury the agent's answer</h3><p>When the reminder fires after an agent has answered, the agent's last message becomes "I saved a note; my answers are above". Any script or tool that reads only the last message gets the wrong text. It also fires in question-only sessions, asking for a codebase map where nothing was explored. Living Memory should handle non-interactive sessions differently.</p></div>
+  </div>
+</section>
+
+<section id="fixes">
+  <div class="eyebrow">8 · Measurement problems</div>
+  <h2>Two problems we found in our own measuring, and fixed</h2>
+  <div class="prose">
+    <p><b>Answers hidden behind memory housekeeping.</b> The first scoring of arm C read only each agent's last message. Because of the Stop reminder bug above, 8 of 14 repo-quiz answer sheets and 6 of 9 work-test replies were read as "I saved a note" instead of the real answer. The quiz score first came out as 0.348, which looked like a collapse. We changed the simulator to read the agent's real answer (the text written before the memory saving at the end) and regraded arm C from its saved transcripts. No agent was rerun. Arms A0 and A1 have no Stop reminder; their evidence was byte-for-byte the same under the new reader, so their scores stand. Work tests whose evidence did not change kept their original grade.</p>
+    <p><b>Sessions that stayed open after finishing.</b> Some agents started a background command (a wait loop, a build watcher) and finished their work, but the session stayed alive until that command's own time limit, up to 19 minutes. Each wave waits for its slowest agent, so these delays added up in every arm: 12, 9 and 32 minutes of idle time in A0, A1 and C. The simulator now ends a session 30 seconds after the agent's final answer. Every run took about three hours regardless of memory.</p>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="eyebrow">9 · Limits</div>
+  <h2>How far to trust this</h2>
+  <ul class="plain prose">
+    <li><b>One run per setup.</b> AI agents behave differently each time they run, and the three planned repeats per arm were cancelled. Differences of 0.1 on the work tests are within what chance alone produces.</li>
+    <li><b>Nine work tests and fifteen facts.</b> Small samples, chosen by us. A different set of tests could rank the arms differently.</li>
+    <li><b>An AI judge grades the work.</b> It passed its audit (96% agreement, no false passes), but it can still be strict or lenient on borderline cases.</li>
+    <li><b>Cheap, fast models at low effort.</b> Stronger models or higher effort might use memory very differently.</li>
+    <li><b>A compressed project.</b> Four sprints of three days each is a short project. Memory should matter more over months, as people forget and teams turn over; this test cannot show that.</li>
+    <li><b>Partial Living Memory.</b> Only phases 1 to 3 were installed. The document index and digests, aimed at the retrieval gap, were not tested.</li>
+    <li><b>Arm C was scored after a fix.</b> The regrading followed a fixed rule and changed only how the answers were read, but it was done after we had seen the first numbers.</li>
+  </ul>
+</section>
+
+<section id="targets">
+  <div class="eyebrow">10 · Targets</div>
+  <h2>Against the goals set for the remediation</h2>
+  <div class="scroll"><table>
+    <tr><th>Goal</th><th class="num">First simulation</th><th class="num">Target</th><th class="num">This run (C)</th><th>Status</th></tr>
+    <tr><td>Should-know facts answered from memory alone</td><td class="num">6%</td><td class="num">≥ 35%</td><td class="num">23%</td><td><span class="status miss">Missed</span></td></tr>
+    <tr><td>Should-know misses never saved</td><td class="num">53</td><td class="num">≤ 25</td><td class="num">36</td><td><span class="status miss">Missed</span></td></tr>
+    <tr><td>Note updates + replacements</td><td class="num">5 + 0</td><td class="num">≥ 20, ≥ 1 replacement</td><td class="num">117 + 5</td><td><span class="status met">Met</span></td></tr>
+    <tr><td>Decision docs with a pointer note</td><td class="num">—</td><td class="num">≥ 70%</td><td class="num">63%</td><td><span class="status miss">Missed</span></td></tr>
+    <tr><td>Agents with a project brief at the end</td><td class="num">—</td><td class="num">≥ 90%</td><td class="num">93%</td><td><span class="status met">Met</span></td></tr>
+    <tr><td>Project-status questions (P1–P3), memory only</td><td class="num">—</td><td class="num">≥ 60%</td><td class="num">19%</td><td><span class="status miss">Missed</span></td></tr>
+    <tr><td>Planted mistake repeated after being learned</td><td class="num">—</td><td class="num">≤ 1 per agent</td><td class="num">0</td><td><span class="status na">Untested</span></td></tr>
+    <tr><td>Extra cost per session vs no memory</td><td class="num">—</td><td class="num">≤ 15%</td><td class="num">−4%</td><td><span class="status met">Met</span></td></tr>
+  </table></div>
+  <p class="note">"Untested" because no Living Memory agent ever hit the commit-hook trap, so there was nothing to repeat. The first simulation used a different scenario and quiz, so its column is a rough reference only.</p>
+</section>
+
+<section id="next">
+  <div class="eyebrow">11 · Next steps</div>
+  <h2>What would settle the question</h2>
+  <ol class="plain prose">
+    <li><b>Fix the Stop reminder for non-interactive sessions</b>, so it never replaces an agent's answer and doesn't fire in question-only sessions.</li>
+    <li><b>Install phases 4 to 6</b> (document index, digests, wiki connectors), which target the "saved but not found" gap, then test a fresh agent that only has the indexed project to answer from.</li>
+    <li><b>Run more repeats</b> when a firm answer matters: at least three runs per arm, now roughly 2.5 hours and $17 each with the simulator fixes.</li>
+    <li><b>Look into the fee-cap judgment</b>: whether memory notes or the briefs carried "unconfirmed, do not build" from one agent to the rest of the team.</li>
+  </ol>
+</section>
+
+<section id="glossary">
+  <div class="eyebrow">Glossary</div>
+  <h2>Terms used in this report</h2>
+  <dl class="gloss">
+    <dt>Agent</dt><dd>An AI model (here Claude) working as a software engineer: it reads files, runs commands and writes code by itself.</dd>
+    <dt>Session</dt><dd>One sitting of one agent, here one working day. Each session starts with no memory of earlier ones.</dd>
+    <dt>Living Memory</dt><dd>The memory add-on being tested. It keeps short notes per person and shows relevant ones to the agent automatically.</dd>
+    <dt>Store</dt><dd>One person's collection of Living Memory notes. Each agent had its own private store.</dd>
+    <dt>Hook</dt><dd>A small script the agent's tool runs at fixed moments (session start, each prompt, before a command, at the end), through which Living Memory reads and suggests notes.</dd>
+    <dt>Stop reminder</dt><dd>A hook that, when an agent is about to finish, may ask it once to save something important first.</dd>
+    <dt>Codebase map</dt><dd>A note describing how a repository is laid out and built, so the next session need not re-explore it.</dd>
+    <dt>Project brief</dt><dd>A note per project with goals, owners, current phase, blockers and key decisions, kept up to date.</dd>
+    <dt>Arm</dt><dd>One of the setups being compared (A0, A1, C).</dd>
+    <dt>Seed</dt><dd>One repeat of a run. AI agents behave differently each time, so repeats show how much is luck. This report covers seed 1 only.</dd>
+    <dt>Work test (probe)</dt><dd>An ordinary-looking task that secretly needs earlier knowledge, scored against a hidden checklist.</dd>
+    <dt>Should-know</dt><dd>A fact an agent ought to know from its role or from something it was told; quiz scores count only these.</dd>
+    <dt>Parity</dt><dd>The new system producing exactly the same results as the old one on the same input.</dd>
+    <dt>CI</dt><dd>Continuous integration: the automatic build and test run after work is merged.</dd>
+    <dt>ADR</dt><dd>Architecture decision record: a short document recording a technical decision and why.</dd>
+    <dt>COBOL</dt><dd>A programming language from 1959 still running much of the world's core banking.</dd>
+  </dl>
+</section>
+
+<footer>
+  <div>Simulator: <code>C:\Users\tyler\Documents\sandbox\lm-team-sim</code> · runs <code>bank-cobol-springboot-v2-20261111-120632-A0-s1</code>, <code>…-120652-A1-s1</code>, <code>…-161109-C-s1</code> (each with metrics.json, stores, transcripts, quiz and probe grades). The cancelled second run <code>…-191400-A0-s2</code> is marked aborted.</div>
+  <div>Reproduce a run: <code>python -I sim.py pipeline bank-cobol-springboot-v2 --memory off|builtin|on [--semantic] --label NAME</code>; compare runs with <code>sim.py compare-arms</code>. Total spend for the three runs: $52.05.</div>
+</footer>
+</div>
