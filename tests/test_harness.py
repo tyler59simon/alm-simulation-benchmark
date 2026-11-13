@@ -375,23 +375,23 @@ class ReviewMetrics(unittest.TestCase):
         items = [self.row('stale', 'aaaaaaaa'), self.row('stale', 'bbbbbbbb'), self.row('stale', 'dddddddd'),
                  self.row('due', 'eeeeeeee', type='status'), self.row('due', 'cccccccc'),
                  self.row('duplicate', 'bbbbbbbb', pair=pair('cccccccc')), self.row('duplicate', 'bbbbbbbb', pair=pair('dddddddd')),
-                 self.row('warned', 'ffffffff'), self.row('warned', 'dddddddd'),
-                 self.row('noisy', 'ffffffff'), self.row('noisy', 'dddddddd'),
+                 self.row('warned', 'ffffffff'), self.row('warned', 'bbbbbbbb'), self.row('warned', 'dddddddd'),
+                 self.row('noisy', 'ffffffff'), self.row('noisy', 'bbbbbbbb'),
                  self.row('noisy', '99999999', title='Sprint 3 status')]   # archived and gone: judged by its title
         items[0]['kinds'] = ['stale', 'duplicate']   # judged under the first kind only
         jsonl(self.run.dir / 'reviews.jsonl', [
             {'sprint': 1, 'agent': 'po', 'counts': {'stale': 3, 'due': 2}, 'items': items[:5], 'applied': [{'ref': 'd:aaaaaaaa', 'plan_id': 'p1'}]},
-            {'sprint': 2, 'agent': 'po', 'counts': {'duplicate': 2, 'warned': 2, 'noisy': 3}, 'items': items[5:]},
+            {'sprint': 2, 'agent': 'po', 'counts': {'duplicate': 2, 'warned': 3, 'noisy': 3}, 'items': items[5:]},
             {'sprint': 2, 'agent': 'qa', 'error': 'boom'}])
         m = analyze.review_metrics(self.run)
-        self.assertEqual((m['judged'], m['unjudged']), (11, 1))
+        self.assertEqual((m['judged'], m['unjudged']), (11, 2))
         self.assertEqual(m['worklist_precision'], round(6 / 11, 3))
         self.assertEqual(m['by_kind']['stale'], {'rows': 3, 'judged': 2, 'real': 1})
         self.assertEqual(m['by_kind']['due'], {'rows': 2, 'judged': 2, 'real': 1})
         self.assertEqual(m['by_kind']['duplicate'], {'rows': 2, 'judged': 2, 'real': 1})
-        self.assertEqual(m['by_kind']['warned'], {'rows': 2, 'judged': 2, 'real': 1})
+        self.assertEqual(m['by_kind']['warned'], {'rows': 3, 'judged': 2, 'real': 1})
         self.assertEqual(m['by_kind']['noisy'], {'rows': 3, 'judged': 3, 'real': 2})
-        self.assertEqual(m['review_rows'], {'1': {'stale': 3, 'due': 2}, '2': {'duplicate': 2, 'warned': 2, 'noisy': 3}})
+        self.assertEqual(m['review_rows'], {'1': {'stale': 3, 'due': 2}, '2': {'duplicate': 2, 'warned': 3, 'noisy': 3}})
         self.assertEqual(m['plans_applied'], 1)
 
     def test_nothing_judged_gives_no_precision(self):

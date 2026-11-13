@@ -822,8 +822,10 @@ def judge_row(row, notes, facts):
         if not mine:
             return None
         return any(hits(ptxt, c + s) for fid, c, s in facts if fid in mine)
-    if kind in ('warned', 'noisy'):
-        return any(re.search(p, txt) for p in NOISE)
+    if kind in ('warned', 'noisy'):   # wrong only when the flagged note holds a current fact; other flag reasons are not in the ground truth
+        if any(re.search(p, txt) for p in NOISE):
+            return True
+        return False if any(hits(txt, c) for _, c, _ in facts) else None
     return None
 
 
