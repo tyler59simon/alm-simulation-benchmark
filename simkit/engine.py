@@ -27,9 +27,10 @@ def lm_version(cfg):
     return {'app': str(app), 'tree_sha256': tree_hash(parts)[:16], 'version': version}
 
 
-def init(scenario, label=None, prime=True, memory='on', semantic=False):
+def init(scenario, label=None, prime=True, memory='on', semantic=False, review_user=False):
     """memory='off' runs every agent with hooks disabled (the control arm); semantic=True installs the embedding model
-    into each store from the machine's model folder (config semantic_model_dir), offline and hash-verified."""
+    into each store from the machine's model folder (config semantic_model_dir), offline and hash-verified.
+    review_user=True lets the end-of-sprint review archive the notes its worklist proposes to archive."""
     src = SCENARIOS / scenario
     if not (src / 'scenario.json').exists():
         raise SystemExit(f'No scenario {scenario}')
@@ -46,7 +47,7 @@ def init(scenario, label=None, prime=True, memory='on', semantic=False):
     write_json(path / 'manifest.json', {
         'scenario': scenario, 'label': label, 'created': now(), 'scenario_sha256': tree_hash([src])[:16],
         'living_memory': lm_version(cfg), 'claude_code': claude_v, 'harness_sha256': tree_hash([HOME / 'simkit'])[:16],
-        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic)}, 'finished': None})
+        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic), 'review_user': bool(review_user)}, 'finished': None})
     run = Run(path)
     log(run, f'init {path.name}')
     if run.workspace_enabled:
@@ -272,7 +273,43 @@ def sprint(run, n):
     handovers(run, n)
     for d in range(1, run.days + 1):
         day(run, n, d)
+    review(run, n)
     run.mark(f's{n}')
+
+
+def review(run, n):
+    """End of sprint: fetch each agent store's review worklist and log it to reviews.jsonl. With the review-user option a
+    simulated user also archives the notes the worklist proposes to archive; every other row is only logged."""
+    step = f's{n}/review'
+    if run.options.get('memory') != 'on' or run.done(step):
+        return
+    domain = run.scenario['domain']
+    for aid in run.agents():
+        store = run.stores / aid
+        if not store.is_dir():
+            continue
+        entry = {'ts': now(), 'sprint': n, 'agent': aid}
+        try:
+            listed = stores.lm(store, ['--domain', domain, 'review', '--limit', '100'])
+            items = listed.get('items') or []
+            entry.update(counts=listed.get('counts') or {}, total=listed.get('total'), items=items)
+            if run.options.get('review_user'):
+                entry['applied'], entry['errors'] = [], []
+                for row in items:
+                    if row.get('action') != 'archive-plan':
+                        continue
+                    try:
+                        plan = stores.lm(store, ['--domain', domain, 'plan', 'archive', row['ref']])
+                        stores._apply(store, plan, domain)
+                        entry['applied'].append({'ref': row['ref'], 'plan_id': plan.get('plan_id')})
+                    except Exception as e:  # noqa: BLE001 one bad plan must not stop the others
+                        entry['errors'].append({'ref': row.get('ref'), 'error': str(e)[-300:]})
+        except Exception as e:  # noqa: BLE001 a failed review must not stop the sprint
+            entry['error'] = str(e)[-300:]
+        append_jsonl(run.dir / 'reviews.jsonl', entry)
+        log(run, f"{step} {aid}: {entry.get('error') or json.dumps(entry.get('counts'))}"
+                 + (f" applied {len(entry['applied'])}" if entry.get('applied') else ''))
+    run.mark(step)
 
 
 def day(run, n, d):

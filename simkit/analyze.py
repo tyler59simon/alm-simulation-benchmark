@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .common import clean_env, config, read_json, read_jsonl, write_json
 
-SCHEMA = 2
+SCHEMA = 3
 LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'supersede', 'confirm', 'check', 'resolve',
                   'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'learn', 'timeline',
                   'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan')
@@ -70,6 +70,7 @@ def store_metrics(store, truth):
          'by_type': dict(Counter(n.get('type') for n in notes)), 'by_status': dict(Counter(n.get('status') for n in notes)),
          'by_domain': dict(Counter(n.get('domain') for n in notes)),
          'maps': sum(1 for n in active if n.get('type') == 'map'),
+         'status_snapshots': sum(1 for n in active if n.get('type') == 'status'),
          'global_notes': sum(1 for n in notes if n.get('domain') == '_global'),
          'active_chars': sum(len(n['_body']) for n in active),
          'noise_notes': sum(1 for n in active if any(re.search(p, text_of(n)) for p in NOISE)),
@@ -121,7 +122,7 @@ def automemory_files(ws_path):
 
 
 END_SNAPSHOT = 'stores-at-end.json'
-END_KEYS = ('notes_total', 'notes_active', 'by_type', 'by_status', 'maps', 'active_chars', 'noise_notes', 'facts')
+END_KEYS = ('notes_total', 'notes_active', 'by_type', 'by_status', 'maps', 'active_chars', 'noise_notes', 'status_snapshots', 'facts')
 
 
 def snapshot_stores(run):
@@ -784,6 +785,78 @@ def hook_latency(run):
     return {e: {'n': len(v), 'p50': pct(v, .5), 'p95': pct(v, .95)} for e, v in sorted(by.items())}
 
 
+# ---------- end-of-sprint review ----------
+def row_kind(row):
+    kinds = row.get('kinds') or []
+    return kinds[0] if kinds else row.get('kind') or '?'
+
+
+def find_note(notes, ref):
+    """The store note a worklist ref points at (the ref ends in the note id or an id prefix)."""
+    tail = str(ref or '').split(':')[-1]
+    return next((n for n in notes if tail and str(n.get('id', '')).startswith(tail)), None) if tail else None
+
+
+def judge_row(row, notes, facts):
+    """True: the flag is right, False: wrong, None: the ground truth does not say. Judged against the note as it is in
+    the store now (the title and type on the row when the note is gone). `facts` is [(id, current, stale)] regexes."""
+    def view(ref, title, ntype):
+        n = find_note(notes, ref)
+        return ((str(n.get('title', '')) + '\n' + n['_body']).lower() if n else str(title or '').lower()), (n.get('type') if n else ntype)
+
+    def hits(txt, res):
+        return any(r.search(txt) for r in res)
+
+    kind = row_kind(row)
+    txt, ntype = view(row.get('ref'), row.get('title'), row.get('type'))
+    if kind in ('stale', 'due'):
+        if ntype == 'status':
+            return True
+        if any(hits(txt, s) and not hits(txt, c) for _, c, s in facts):
+            return True
+        return False if any(hits(txt, c) for _, c, _ in facts) else None
+    if kind == 'duplicate':
+        pair = row.get('pair') or {}
+        ptxt, _ = view(pair.get('ref'), pair.get('title'), None)
+        mine = {fid for fid, c, s in facts if hits(txt, c + s)}
+        if not mine:
+            return None
+        return any(hits(ptxt, c + s) for fid, c, s in facts if fid in mine)
+    if kind in ('warned', 'noisy'):
+        return any(re.search(p, txt) for p in NOISE)
+    return None
+
+
+def review_metrics(run):
+    """Precision of the end-of-sprint review worklists, from reviews.jsonl. None when the run took no reviews."""
+    path = run.dir / 'reviews.jsonl'
+    if not path.exists():
+        return None
+    entries = read_jsonl(path)
+    facts = [(fid, [re.compile(p, re.I) for p in f.get('patterns', {}).get('current', [])],
+              [re.compile(p, re.I) for p in f.get('patterns', {}).get('stale', [])]) for fid, f in run.truth.get('facts', {}).items()]
+    notes = {}
+    by_kind, per_sprint, applied = {}, {}, 0
+    for e in entries:
+        applied += len(e.get('applied') or [])
+        counts = per_sprint.setdefault(str(e.get('sprint')), {})
+        worklist = e.get('counts') or dict(Counter(row_kind(r) for r in e.get('items') or []))
+        for k, v in worklist.items():
+            counts[k] = counts.get(k, 0) + (v or 0)
+        agent_notes = notes.setdefault(e.get('agent'), store_notes(run.stores / str(e.get('agent'))))
+        for row in e.get('items') or []:
+            k = by_kind.setdefault(row_kind(row), {'rows': 0, 'judged': 0, 'real': 0})
+            k['rows'] += 1
+            verdict = judge_row(row, agent_notes, facts)
+            if verdict is not None:
+                k['judged'] += 1
+                k['real'] += bool(verdict)
+    judged, real = sum(k['judged'] for k in by_kind.values()), sum(k['real'] for k in by_kind.values())
+    return {'worklist_precision': round(real / judged, 3) if judged else None, 'judged': judged,
+            'unjudged': sum(k['rows'] for k in by_kind.values()) - judged, 'by_kind': by_kind,
+            'review_rows': per_sprint, 'plans_applied': applied}
+
+
 # ---------- run ----------
 def analyze(run):
     state = run.state()
@@ -829,6 +902,7 @@ def analyze(run):
                    'notes_active': sum(m['notes_active'] for m in per_store.values()),
                    'maps': sum(m['maps'] for m in per_store.values()),
                    'noise_notes': sum(m['noise_notes'] for m in per_store.values()),
+                   'status_snapshots': sum(m.get('status_snapshots', 0) for m in per_store.values()),
                    'lm_cli_errors': sum(m['commands']['errors'] for m in per_store.values()),
                    'leaks': sum(len(s['leaks']) for s in per_session.values())},
         'by_tier': dict(tiers), 'stores': per_store, 'facts': fact_cov, 'sessions': per_session,
@@ -847,6 +921,9 @@ def analyze(run):
         'grader_audit': {k: v for k, v in (read_json(run.dir / 'quiz' / 'grader-audit.json') or {}).items() if k != 'rows'} or None,
         'currency': {'updates': sum(s['usage'].get('update', 0) for s in per_store.values()),
                      'supersedes': sum(s['by_status'].get('superseded', 0) for s in per_store.values())}}
+    review = review_metrics(run)
+    if review is not None:
+        metrics['review'] = review
     write_json(run.dir / 'metrics.json', metrics)
     return metrics
 
@@ -857,12 +934,16 @@ def summary(m):
     lines = [f"run {m['run']} (memory {opts.get('memory', 'on')}, semantic {opts.get('semantic', False)}): {t['sessions']} sessions, "
              f"${t['cost_usd']} (work ${t.get('work_cost_usd')}, colleagues ${t.get('chat_cost_usd')}, harness ${t.get('harness_cost_usd')}, "
              f"{t.get('cost_unknown_sessions')} without a cost), failed {t['failed_sessions']}, timeouts {t['timeouts']}",
-             f"memory: {t['notes_active']} active notes, {t['maps']} maps, {t['noise_notes']} noise-like, {t['lm_calls']} LM calls "
+             f"memory: {t['notes_active']} active notes, {t['maps']} maps, {t['noise_notes']} noise-like, {t.get('status_snapshots')} status, {t['lm_calls']} LM calls "
              f"({t['lm_calls_per_work_session']}/work session), {t['lm_cli_errors']} CLI errors, blocked-path attempts {t['leaks']}",
              f"currency: {(m.get('currency') or {}).get('updates')} updates, {(m.get('currency') or {}).get('supersedes')} superseded; "
              f"pointers: {(m.get('pointers') or {}).get('with_pointer')}/{(m.get('pointers') or {}).get('docs')} decision docs",
              f"CI: {m['ci']['green']}/{m['ci']['runs']} green, last {'green' if m['ci']['last_ok'] else 'RED'}; merges: "
              f"{m['merges']['conflicts_first_try']} conflicts, {m['merges']['failed_final']} unresolved"]
+    rv = m.get('review')
+    if rv:
+        lines.append(f"review: worklist precision {rv['worklist_precision']} ({rv['judged']} judged, {rv['unjudged']} unjudged), "
+                     f"{rv['plans_applied']} plans applied")
     if q:
         lines.append(f"quiz (memory only): all {q['score_all']}, should-know {q['score_should_know']}, failures {q['failure_kinds_should_know']}")
     if qr:
@@ -979,6 +1060,9 @@ ARM_METRICS = (
     ('commit-policy repeat sessions', lambda m: ((m.get('mistakes') or {}).get('M1') or {}).get('repeat_sessions')),
     ('lint repeats (L1+L2)', lambda m: sum(((m.get('mistakes') or {}).get(k) or {}).get('repeats') or 0 for k in ('M2', 'M3'))),
     ('stale notes (D1)', lambda m: len(((m.get('facts') or {}).get('D1') or {}).get('stores_with_stale_only') or [])),
+    ('status snapshot notes', lambda m: (m.get('totals') or {}).get('status_snapshots')),
+    ('review worklist precision', lambda m: (m.get('review') or {}).get('worklist_precision')),
+    ('review plans applied', lambda m: (m.get('review') or {}).get('plans_applied')),
 )
 
 

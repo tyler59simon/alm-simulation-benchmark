@@ -81,6 +81,12 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 - Probe evidence holds only tracker and wiki files the session's own tools named or created, and after a merge conflict the diff starts at the main the agent merged in. Source files come before documents, each capped at 4,000 characters.
 - A session that ends without a result event (timeout) has no known cost; `spent()` and the spend limit count its budget cap (`cost_bound_usd`).
 
+## Review metrics (schema 3)
+Schema 3 adds `status_snapshots` (active notes of type `status`, per store and in `totals`) and, for runs with Living Memory on, an end-of-sprint review:
+- After each sprint's last day the harness runs `review --domain D --limit 100` on every agent store and appends `{sprint, agent, counts, items}` to `reviews.jsonl` (a failing store is logged and skipped). The step is `sN/review`, so a resumed run does not repeat it.
+- `init --review-user` (also on `pipeline`) adds a simulated user: for each `archive-plan` row it runs `plan archive REF` and applies the plan, recorded under `applied`. Merge, update, confirm and other rows are only logged.
+- `metrics.json` `review` (absent when the run has no `reviews.jsonl`): `worklist_precision` (real / judged, null when nothing was judged), `judged`, `unjudged`, `by_kind` {rows, judged, real}, `review_rows` (worklist size by kind per sprint) and `plans_applied`. A row is judged under its first kind against the note as it is in the store at analysis time (the row's title and type when the note is gone): stale and due are real for a status note or a note matching a fact's stale and not its current patterns, false when it matches a current pattern; duplicate is real when the note and its pair match the same fact; warned and noisy are real when the text matches the noise patterns. Anything else is unjudged.
+
 ## Work metrics (schema 2)
 `analyze` computes these offline from transcripts, git and stores, so older runs can be re-analyzed at no model cost (keep the old file as `metrics.v1.json` first):
 - **Cost split** (`totals`): `work_cost_usd` (work sessions and merge resolves), `chat_cost_usd` (simulated colleagues) and `harness_cost_usd` (quizzes, grading, probe judging). Compare arms on work cost: arm C takes one more quiz than A0 and A1, so its run total carries more harness cost.

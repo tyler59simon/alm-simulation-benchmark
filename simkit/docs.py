@@ -467,9 +467,14 @@ def run_page(r, prev, window):
     if (t.get('notes_active') or t.get('lm_calls')) and r.memory == 'on':
         cur, ptr, hl = m.get('currency') or {}, m.get('pointers') or {}, m.get('hook_latency') or {}
         rows = [['Active notes', t.get('notes_active')], ['Maps', t.get('maps')], ['Noise-like notes', t.get('noise_notes')],
+                ['Status snapshot notes', t.get('status_snapshots')],
                 ['Living Memory calls', t.get('lm_calls')], ['Calls per work session', t.get('lm_calls_per_work_session')],
                 ['CLI errors', t.get('lm_cli_errors')], ['Note updates', cur.get('updates')], ['Superseded notes', cur.get('supersedes')],
                 ['Decision docs with a pointer note', f"{f(ptr.get('with_pointer'))} of {f(ptr.get('docs'))}"]]
+        rv = m.get('review')
+        if rv:
+            rows += [['Review worklist precision', f"{f(rv.get('worklist_precision'))} ({f(rv.get('judged'))} judged, {f(rv.get('unjudged'))} unjudged)"],
+                     ['Review plans applied', rv.get('plans_applied')]]
         rows += [[f'Hook {e} p50 / p95 ms', f"{f(v.get('p50'))} / {f(v.get('p95'))} (n={f(v.get('n'))})"] for e, v in hl.items()]
         secs.append({'title': 'Memory stores', 'blocks': [('table', ['Measure', 'Value'], rows)]})
     ci, mg, app = m.get('ci') or {}, m.get('merges') or {}, m.get('app') or {}

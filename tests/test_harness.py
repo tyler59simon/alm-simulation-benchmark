@@ -342,6 +342,152 @@ class RunLog(unittest.TestCase):
         self.assertNotIn(home, docs.scrub(f'path {home}\\x and {home.replace(chr(92), "/")}/y'))
 
 
+def write_note(store, domain, nid, title, body, ntype='knowledge', folder='notes', status='active'):
+    """A note file as the store writes it: JSON-valued frontmatter, then the body."""
+    meta = {'title': title, 'type': ntype, 'status': status, 'id': nid, 'domain': domain}
+    d = Path(store) / 'domains' / domain / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f'{title}-{nid[:8]}.md').write_text('---\n' + ''.join(f'{k}: {json.dumps(v)}\n' for k, v in meta.items()) + '---\n\n' + body + '\n', encoding='utf-8')
+
+
+TRUTH = {'facts': {'F1': {'patterns': {'current': ['30 ?/ ?360'], 'stale': ['actual ?/ ?365']}}}}
+
+
+class ReviewMetrics(unittest.TestCase):
+    def setUp(self):
+        self.run = FakeRun(tempfile.mkdtemp())
+        self.run.truth = TRUTH
+        self.run.stores = self.run.dir / 'stores'
+        store = self.run.stores / 'po'
+        write_note(store, 'd', 'aaaaaaaa-1', 'Old basis', 'Interest uses actual/365 for the day count.')
+        write_note(store, 'd', 'bbbbbbbb-2', 'Basis', 'Interest uses 30/360 for savings.')
+        write_note(store, 'd', 'cccccccc-3', 'Basis again', 'SV1 accrues on 30/360.')
+        write_note(store, 'd', 'dddddddd-4', 'Other', 'Unrelated reminder about lunch.')
+        write_note(store, 'd', 'eeeeeeee-5', 'Where we are', 'Sprint 2 is half done.', ntype='status')
+        write_note(store, 'd', 'ffffffff-6', 'Daily', 'Standup said we are on track.')
+        self.store = store
+
+    def row(self, kind, nid, **extra):
+        return {'ref': f'd:{nid[:8]}', 'title': 't', 'type': 'knowledge', 'kinds': [kind], 'action': 'confirm', **extra}
+
+    def test_precision_by_kind(self):
+        pair = lambda nid: {'ref': f'd:{nid[:8]}', 'title': 'p', 'score': 0.9}   # noqa: E731
+        items = [self.row('stale', 'aaaaaaaa'), self.row('stale', 'bbbbbbbb'), self.row('stale', 'dddddddd'),
+                 self.row('due', 'eeeeeeee', type='status'), self.row('due', 'cccccccc'),
+                 self.row('duplicate', 'bbbbbbbb', pair=pair('cccccccc')), self.row('duplicate', 'bbbbbbbb', pair=pair('dddddddd')),
+                 self.row('warned', 'ffffffff'), self.row('warned', 'dddddddd'),
+                 self.row('noisy', 'ffffffff'), self.row('noisy', 'dddddddd'),
+                 self.row('noisy', '99999999', title='Sprint 3 status')]   # archived and gone: judged by its title
+        items[0]['kinds'] = ['stale', 'duplicate']   # judged under the first kind only
+        jsonl(self.run.dir / 'reviews.jsonl', [
+            {'sprint': 1, 'agent': 'po', 'counts': {'stale': 3, 'due': 2}, 'items': items[:5], 'applied': [{'ref': 'd:aaaaaaaa', 'plan_id': 'p1'}]},
+            {'sprint': 2, 'agent': 'po', 'counts': {'duplicate': 2, 'warned': 2, 'noisy': 3}, 'items': items[5:]},
+            {'sprint': 2, 'agent': 'qa', 'error': 'boom'}])
+        m = analyze.review_metrics(self.run)
+        self.assertEqual((m['judged'], m['unjudged']), (11, 1))
+        self.assertEqual(m['worklist_precision'], round(6 / 11, 3))
+        self.assertEqual(m['by_kind']['stale'], {'rows': 3, 'judged': 2, 'real': 1})
+        self.assertEqual(m['by_kind']['due'], {'rows': 2, 'judged': 2, 'real': 1})
+        self.assertEqual(m['by_kind']['duplicate'], {'rows': 2, 'judged': 2, 'real': 1})
+        self.assertEqual(m['by_kind']['warned'], {'rows': 2, 'judged': 2, 'real': 1})
+        self.assertEqual(m['by_kind']['noisy'], {'rows': 3, 'judged': 3, 'real': 2})
+        self.assertEqual(m['review_rows'], {'1': {'stale': 3, 'due': 2}, '2': {'duplicate': 2, 'warned': 2, 'noisy': 3}})
+        self.assertEqual(m['plans_applied'], 1)
+
+    def test_nothing_judged_gives_no_precision(self):
+        jsonl(self.run.dir / 'reviews.jsonl', [{'sprint': 1, 'agent': 'po', 'counts': {'interim': 1}, 'items': [self.row('interim', 'dddddddd')]}])
+        m = analyze.review_metrics(self.run)
+        self.assertEqual((m['worklist_precision'], m['judged'], m['unjudged']), (None, 0, 1))
+
+    def test_no_reviews_file_means_no_metrics(self):
+        self.assertIsNone(analyze.review_metrics(self.run))
+
+    def test_status_snapshots_count_active_status_notes(self):
+        write_note(self.store, 'd', 'abababab-7', 'Old status', 'Sprint 1.', ntype='status', folder='archive', status='archived')
+        m = analyze.store_metrics(self.store, TRUTH)
+        self.assertEqual(m['status_snapshots'], 1)
+        self.assertEqual(m['notes_active'], 6)
+
+    def test_analyze_leaves_review_out_without_reviews(self):
+        from simkit.common import Run
+        root = Path(tempfile.mkdtemp())
+        (root / 'scenario').mkdir()
+        (root / 'scenario' / 'scenario.json').write_text('{"roster": []}', encoding='utf-8')
+        write_note(root / 'stores' / 'po', 'd', 'aaaaaaaa-1', 'Status', 'Now.', ntype='status')
+        m = analyze.analyze(Run(root))
+        self.assertEqual(m['schema'], 3)
+        self.assertEqual(m['totals']['status_snapshots'], 1)
+        self.assertNotIn('review', m)
+        self.assertNotIn('review', json.loads((root / 'metrics.json').read_text(encoding='utf-8')))
+
+
+class SprintReview(unittest.TestCase):
+    def make_run(self, memory='on', review_user=False):
+        run = FakeRun(tempfile.mkdtemp())
+        run.options = {'memory': memory, 'review_user': review_user}
+        run.scenario = {'domain': 'd', 'roster': [{'id': 'po'}, {'id': 'qa'}, {'id': 'late'}]}
+        run.stores = run.dir / 'stores'
+        for a in ('po', 'qa'):
+            (run.stores / a).mkdir(parents=True)
+        run.agents = lambda: {a['id']: a for a in run.scenario['roster']}
+        run.done = lambda step: step in run._state['steps']
+        run.mark = lambda step: run._state['steps'].append(step)
+        return run
+
+    def stub(self):
+        calls = []
+        rows = [{'ref': 'd:11111111', 'kinds': ['duplicate'], 'action': 'archive-plan'},
+                {'ref': 'd:22222222', 'kinds': ['stale'], 'action': 'update'},
+                {'ref': 'd:33333333', 'kinds': ['duplicate'], 'action': 'merge-plan'}]
+
+        def lm(store, args, payload=None, actor=None, cwd=None):
+            calls.append((Path(store).name, list(args)))
+            if 'review' in args:
+                if Path(store).name == 'po':
+                    raise RuntimeError('review failed')
+                return {'items': rows, 'counts': {'duplicate': 2, 'stale': 1}, 'total': 3}
+            return {'plan_id': 'plan-1', 'digest': 'abc'}
+
+        applied = []
+        saved = (engine.stores.lm, engine.stores._apply)
+        engine.stores.lm = lm
+        engine.stores._apply = lambda store, plan, domain=None: applied.append((Path(store).name, plan['plan_id'], domain))
+        self.addCleanup(lambda: (setattr(engine.stores, 'lm', saved[0]), setattr(engine.stores, '_apply', saved[1])))
+        return calls, applied
+
+    def test_review_logs_rows_and_survives_a_failing_store(self):
+        run = self.make_run()
+        calls, applied = self.stub()
+        engine.review(run, 2)
+        rows = [json.loads(x) for x in (run.dir / 'reviews.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([(r['sprint'], r['agent']) for r in rows], [(2, 'po'), (2, 'qa')])
+        self.assertIn('review failed', rows[0]['error'])
+        self.assertEqual((rows[1]['counts'], len(rows[1]['items'])), ({'duplicate': 2, 'stale': 1}, 3))
+        self.assertNotIn('applied', rows[1])
+        self.assertEqual(calls[-1], ('qa', ['--domain', 'd', 'review', '--limit', '100']))
+        self.assertEqual(applied, [])
+        self.assertIn('s2/review', run._state['steps'])
+        engine.review(run, 2)   # resumed: nothing is asked twice
+        self.assertEqual(len((run.dir / 'reviews.jsonl').read_text(encoding='utf-8').splitlines()), 2)
+
+    def test_review_user_archives_only_archive_plan_rows(self):
+        run = self.make_run(review_user=True)
+        calls, applied = self.stub()
+        engine.review(run, 1)
+        rows = [json.loads(x) for x in (run.dir / 'reviews.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(rows[1]['applied'], [{'ref': 'd:11111111', 'plan_id': 'plan-1'}])
+        self.assertEqual(applied, [('qa', 'plan-1', 'd')])
+        self.assertEqual([a for _, a in calls if 'plan' in a], [['--domain', 'd', 'plan', 'archive', 'd:11111111']])
+
+    def test_no_review_without_living_memory(self):
+        run = self.make_run(memory='builtin')
+        calls, _ = self.stub()
+        engine.review(run, 1)
+        self.assertEqual(calls, [])
+        self.assertFalse((run.dir / 'reviews.jsonl').exists())
+        self.assertNotIn('s1/review', run._state['steps'])
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)

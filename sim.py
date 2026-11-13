@@ -1,7 +1,7 @@
 """alm-simulation-benchmark: simulate an enterprise team whose agents each have a private Living Memory store.
 
     python sim.py smoke   SCENARIO                 tiny harness check on a throwaway run
-    python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic]
+    python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic] [--review-user]
                                                    new run folder (repo, clones, stores, toolchain prime, seed CI)
     python sim.py sprint  N [--run RUN]            one sprint (resumable)
     python sim.py run     [--run RUN] [--through N] all sprints (resumable)
@@ -39,9 +39,11 @@ def main(argv=None):
     s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on',
                    help="off: no memory at all (A0); builtin: Claude Code's own auto-memory only (A1); on: Living Memory")
     s.add_argument('--semantic', action='store_true', help='install the embedding model into every store')
+    s.add_argument('--review-user', action='store_true', help='at each sprint end, archive the notes the review worklist proposes to archive')
     s = sub.add_parser('pipeline', help='init + all sprints + quizzes + grading + probes + grader audit + analysis, resumable')
     s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on')
     s.add_argument('--semantic', action='store_true'); s.add_argument('--run', help='resume this run instead of creating one')
+    s.add_argument('--review-user', action='store_true')
     for name in ('probes', 'grade-audit'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('kb-quiz', help='arm D: a fresh agent answers the quiz from a knowledge base of the finished project')
@@ -60,7 +62,7 @@ def main(argv=None):
     if a.cmd == 'smoke':
         print(json.dumps(engine.smoke(a.scenario), indent=2))
     elif a.cmd == 'init':
-        run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic)
+        run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic, review_user=a.review_user)
         print(run.dir)
     elif a.cmd in ('sprint', 'run'):
         run = get()
@@ -77,7 +79,7 @@ def main(argv=None):
         print(analyze.summary(analyze.analyze(get())))
     elif a.cmd == 'pipeline':
         from simkit import probes
-        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic)
+        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic, review_user=a.review_user)
         print(run.dir.name, flush=True)
         try:
             engine.run_all(run)
