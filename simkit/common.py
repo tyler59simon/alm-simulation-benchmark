@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]          # lm-team-sim/
+HOME = Path(__file__).resolve().parents[1]          # alm-simulation-benchmark/
 SCENARIOS, RUNS = HOME / 'scenarios', HOME / 'runs'
 _lock = threading.Lock()
 

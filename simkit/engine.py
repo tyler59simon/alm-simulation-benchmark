@@ -390,7 +390,7 @@ def quiz_room(run, agent_id):
     """An empty folder outside any git work tree: inside the harness repo, Living Memory would treat the harness as
     the agent's repo (its map, its brief)."""
     import tempfile
-    room = Path(tempfile.gettempdir()) / 'lm-team-sim' / 'quizroom' / run.dir.name / agent_id
+    room = Path(tempfile.gettempdir()) / 'alm-simulation-benchmark' / 'quizroom' / run.dir.name / agent_id
     room.mkdir(parents=True, exist_ok=True)
     return room
 

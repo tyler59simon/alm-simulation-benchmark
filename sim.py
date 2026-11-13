@@ -1,4 +1,4 @@
-"""lm-team-sim: simulate an enterprise team whose agents each have a private Living Memory store.
+"""alm-simulation-benchmark: simulate an enterprise team whose agents each have a private Living Memory store.
 
     python sim.py smoke   SCENARIO                 tiny harness check on a throwaway run
     python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic]

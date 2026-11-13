@@ -1,4 +1,4 @@
-# lm-team-sim
+# alm-simulation-benchmark
 
 A repeatable harness that tests Agentic Living Memory (LM) in a simulated enterprise team. Each team member is a real headless Claude Code session (`claude -p`) with its **own private LM store**, so the full hook pipeline runs exactly as it does for a real user: session-start injection, prompt retrieval, guards, Stop reminders and capture receipts. The team works over several sprints on a shared git repo. Scripted events with known answers make memory measurable. At the end, a memory-only quiz and an analyzer score what each agent's memory actually kept.
 
