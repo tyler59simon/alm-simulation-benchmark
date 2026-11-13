@@ -23,14 +23,14 @@ To add a run to the log: finish it with `sim.py pipeline`, run `sim.py analyze -
 
 | Probe score | Quiz with repo | Quiz memory only | Work cost | Sessions |
 |---|---|---|---|---|
-| 0.43 | 0.699 | 0.227 | $13.14 | 228 |
+| 0.363 | 0.699 | 0.227 | $13.14 | 230 |
 
 
 ## Runs: scenario v2
 
-- [v2 C seed 1](runs/bank-cobol-springboot-v2-20261111-161109-C-s1.md) (C): 2026-11-11 22:11 UTC · 228 sessions · work $13.14 (probes 0.43)
-- [v2 A1 seed 1](runs/bank-cobol-springboot-v2-20261111-120652-A1-s1.md) (A1): 2026-11-11 18:06 UTC · 189 sessions · work $14.46 (probes 0.485)
-- [v2 A0 seed 1](runs/bank-cobol-springboot-v2-20261111-120632-A0-s1.md) (A0): 2026-11-11 18:06 UTC · 189 sessions · work $13.73 (probes 0.557)
+- [v2 C seed 1](runs/bank-cobol-springboot-v2-20261111-161109-C-s1.md) (C): 2026-11-11 22:11 UTC · 230 sessions · work $13.14 (probes 0.363)
+- [v2 A1 seed 1](runs/bank-cobol-springboot-v2-20261111-120652-A1-s1.md) (A1): 2026-11-11 18:06 UTC · 193 sessions · work $14.46 (probes 0.485)
+- [v2 A0 seed 1](runs/bank-cobol-springboot-v2-20261111-120632-A0-s1.md) (A0): 2026-11-11 18:06 UTC · 193 sessions · work $13.73 (probes 0.53)
 
 
 ## Runs: scenario v1

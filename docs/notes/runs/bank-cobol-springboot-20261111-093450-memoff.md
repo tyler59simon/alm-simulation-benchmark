@@ -1,0 +1,5 @@
+The control for the first run: the same v1 project with Living Memory's hooks disabled. It ran on the Phase 0 harness, which added this memory-off arm, the repo-access quiz, the planted-mistake metrics and pointer coverage. At that harness version the off arm did not also switch off Claude Code's own auto-memory; that came with arm A0 in scenario v2. So this run is "no Living Memory" rather than "no memory at all".
+
+The pipeline stopped at the sprint-3 handover: the leaver's store had no notes, and the export failed with "No notes match". The harness was changed to skip handovers in the memory-off arm and when the leaver saved nothing, and the run resumed from its saved state.
+
+With the repo available, agents answered most should-know questions correctly. Because the v1 runs took different quizzes (this one with the repo, the first one from memory only), the two cannot be compared on quiz score. The team briefing also changed between them, so the planted-mistake counts are not comparable either.

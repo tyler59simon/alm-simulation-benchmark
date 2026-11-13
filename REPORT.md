@@ -17,14 +17,14 @@ Seeds 2 and 3 were cancelled; `...-191400-A0-s2` is a partial run marked aborted
 ## Headline numbers
 | Measure | A0 | A1 | C |
 |---|---|---|---|
-| Work probes (mean of 9, 0-1) | 0.557 | 0.485 | 0.430 |
+| Work probes (mean of 9, 0-1) | 0.530 | 0.485 | 0.363 |
 | Quiz with repo, should-know | 0.715 | 0.715 | 0.699 |
 | Quiz memory only, should-know | - | - | 0.227 |
 | Steps per probe | 12.0 | 11.9 | 10.3 |
 | Cost per work session | $0.097 | $0.102 | $0.092 |
 | Work cost (work sessions and merge resolves) | $13.73 | $14.46 | $13.14 |
-| Harness cost (quizzes, grading, probe judging) | $2.84 | $3.17 | $4.63 |
-| Run cost | $16.59 | $17.65 | $17.81 |
+| Harness cost (quizzes, grading, probe judging) | $3.06 | $3.38 | $4.73 |
+| Run cost | $16.80 | $17.87 | $17.90 |
 
 The run cost includes the harness measuring the run, and arm C takes one more quiz than A0 and A1, so compare arms on
 work cost. The work-cost and harness rows were added on 2026-11-13 by re-analyzing the runs with metrics schema 2 (the
@@ -41,7 +41,7 @@ earlier analysis stays in each run folder as `metrics.v1.json`).
 | Joiner cost ratio (2 joiners) | 1.96 | 0.85 | 0.82 |
 | App-check regressions | 1 | 0 | 0 |
 
-Probe score against A0, probe by probe: A1 -0.072 (95% CI -0.378 to +0.250), C -0.128 (95% CI -0.350 to +0.083); neither
+Probe score against A0, probe by probe: A1 -0.044 (95% CI -0.367 to +0.278), C -0.167 (95% CI -0.378 to +0.056); neither
 interval excludes zero. Most of C's repeated failed Living Memory calls (13 sessions, 8 agents) are Bash commands that start
 with the PowerShell call operator, `& "python.exe" ".../living_memory.py" ...`, which Bash rejects.
 
@@ -50,6 +50,12 @@ with the PowerShell call operator, `& "python.exe" ".../living_memory.py" ...`, 
 - C was regraded from its transcripts after a harness fix: Living Memory's Stop reminder made agents save notes
   after answering, and the harness had read that housekeeping message instead of the answer. A0 and A1 evidence
   was identical under the new reader.
+- Probes were re-graded on 2026-11-13 with the evidence fixes (tracker pages limited to the session's own edits, diffs
+  from the merged main), for $0.53. Ten probes got a new judge call; two changed score, A0 PR7 (1.0 to 0.75) and C PR4
+  (1.0 to 0.4). In both, the engineer's reply was unchanged and the judge's old and new reasons describe the same gap
+  (C's reply never says the dates are Julian YYDDD; A0's draft calls the deviation list empty), so the flips look like
+  judge variance on borderline answers rather than an effect of the removed evidence. The earlier grades are kept in
+  each run folder as `probes.v1/`.
 - C lost the fee-cap questions (D2, P3) and most of probe PR7 because its team recorded PC-2025-21 as
   unconfirmed and never built it; the NPC also revealed it in sprint 2, earlier than the scenario intended.
 - The memory-only quiz ran after the repo quiz, so memory-only scores include some knowledge taken from the repo.
