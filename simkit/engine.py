@@ -291,8 +291,8 @@ def review(run, n):
         entry = {'ts': now(), 'sprint': n, 'agent': aid}
         try:
             listed = stores.lm(store, ['--domain', domain, 'review', '--limit', '100'])
-            items = listed.get('items') or []
-            entry.update(counts=listed.get('counts') or {}, total=listed.get('total'), items=items)
+            items = listed.get('notes') or []   # the CLI returns the worklist rows as `notes` and their number as `due`
+            entry.update(counts=listed.get('counts') or {}, total=listed.get('due'), items=items)
             if run.options.get('review_user'):
                 entry['applied'], entry['errors'] = [], []
                 for row in items:

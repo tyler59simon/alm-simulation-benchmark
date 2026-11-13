@@ -445,7 +445,7 @@ class SprintReview(unittest.TestCase):
             if 'review' in args:
                 if Path(store).name == 'po':
                     raise RuntimeError('review failed')
-                return {'items': rows, 'counts': {'duplicate': 2, 'stale': 1}, 'total': 3}
+                return {'ok': True, 'due': 3, 'stale_digests': 1, 'counts': {'duplicate': 2, 'stale': 1}, 'notes': rows}   # the CLI's review shape
             return {'plan_id': 'plan-1', 'digest': 'abc'}
 
         applied = []
