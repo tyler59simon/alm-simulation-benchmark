@@ -11,6 +11,7 @@
     python sim.py compare RUN_A RUN_B              diff comparable metrics of two runs
     python sim.py verify-isolation [--run RUN]     no run session in the real store or another agent's store
     python sim.py status  [--run RUN]              steps done, sessions, spend
+    python sim.py docs                             write the run log in docs/ (Markdown and HTML)
 
 RUN defaults to the newest run folder under runs/. Nothing is ever deleted.
 """
@@ -53,6 +54,7 @@ def main(argv=None):
     for name in ('analyze', 'verify-isolation', 'status', 'finish'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('compare'); s.add_argument('a'); s.add_argument('b')
+    sub.add_parser('docs', help='write the run log (docs/, Markdown and HTML) from runs/, docs/notes/ and the LM repo history')
     a = p.parse_args(argv)
     get = lambda: resolve_run(a.run) if getattr(a, 'run', None) else latest_run()  # noqa: E731
     if a.cmd == 'smoke':
@@ -123,6 +125,9 @@ def main(argv=None):
                           'spent_usd': run.spent()}, indent=2))
     elif a.cmd == 'finish':
         engine.finish(get())
+    elif a.cmd == 'docs':
+        from simkit import docs
+        print(docs.build())
     return 0
 
 

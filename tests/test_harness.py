@@ -312,6 +312,36 @@ class WorkMetrics(unittest.TestCase):
         self.assertIn('1/1/0', line)
 
 
+class RunLog(unittest.TestCase):
+    def test_notes_markdown_to_html(self):
+        from simkit import docs
+        out = docs.note_blocks('## Head\n\nA **bold** `x` [v2](../analysis/v2.md).\n\n- one\n- two\n  more\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\nraw <x>\n```')
+        self.assertIn('<h3>Head</h3>', out)
+        self.assertIn('<strong>bold</strong> <code>x</code> <a href="../analysis/v2.html">v2</a>', out)
+        self.assertIn('<li>two more</li>', out)
+        self.assertIn('<th>a</th>', out)
+        self.assertIn('raw &lt;x&gt;', out)
+
+    def test_prs_land_in_the_window_before_the_next_run(self):
+        from datetime import datetime, timezone
+        from simkit import docs
+        t = lambda h: datetime(2026, 11, 11, h, tzinfo=timezone.utc)   # noqa: E731
+        class R:
+            def __init__(self, name, h):
+                self.name, self.created = name, t(h)
+        runs = [R('r1', 10), R('r2', 14)]
+        prs = [{'when': t(h), 'number': n, 'title': str(n)} for h, n in ((8, 1), (9, 2), (12, 3), (16, 4))]
+        windows, later = docs.pr_windows(runs, prs)
+        self.assertEqual([p['number'] for p in windows['r1']], [1, 2])
+        self.assertEqual([p['number'] for p in windows['r2']], [3])
+        self.assertEqual([p['number'] for p in later], [4])
+
+    def test_home_folder_is_scrubbed(self):
+        from simkit import docs
+        home = str(Path.home())
+        self.assertNotIn(home, docs.scrub(f'path {home}\\x and {home.replace(chr(92), "/")}/y'))
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)

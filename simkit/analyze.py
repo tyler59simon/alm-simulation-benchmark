@@ -982,31 +982,40 @@ ARM_METRICS = (
 )
 
 
-def paired_probes(arms, reps=2000, seed=0):
+def per_probe_means(ms):
+    """{probe id: score averaged over the runs (seeds) given}."""
+    acc = defaultdict(list)
+    for m in ms:
+        for pid, s in ((m.get('probes') or {}).get('by_probe') or {}).items():
+            if isinstance(s, (int, float)):
+                acc[pid].append(s)
+    return {pid: statistics.mean(v) for pid, v in acc.items()}
+
+
+def paired_probe_stats(arms, reps=2000, seed=0):
     """Each arm against the first, probe by probe: mean score difference over the probes both arms ran (each probe's
     score averaged over that arm's seeds), with a bootstrap 95% interval over probes and win/tie/loss counts."""
-    def per_probe(ms):
-        acc = defaultdict(list)
-        for m in ms:
-            for pid, s in ((m.get('probes') or {}).get('by_probe') or {}).items():
-                if isinstance(s, (int, float)):
-                    acc[pid].append(s)
-        return {pid: statistics.mean(v) for pid, v in acc.items()}
     names = list(arms)
     if len(names) < 2:
         return []
-    ref, out = per_probe(arms[names[0]]), []
+    ref, out = per_probe_means(arms[names[0]]), []
     for name in names[1:]:
-        mine = per_probe(arms[name])
+        mine = per_probe_means(arms[name])
         d = [mine[p] - ref[p] for p in sorted(set(ref) & set(mine))]
         if not d:
             continue
         rng = random.Random(seed)
         boots = sorted(statistics.mean(rng.choices(d, k=len(d))) for _ in range(reps))
-        out.append(f"probe score {name} - {names[0]}: {statistics.mean(d):+.3f} (95% CI {boots[int(.025 * reps)]:+.3f} to "
-                   f"{boots[int(.975 * reps) - 1]:+.3f} over {len(d)} probes; wins/ties/losses "
-                   f"{sum(x > 0 for x in d)}/{sum(x == 0 for x in d)}/{sum(x < 0 for x in d)})")
+        out.append({'arm': name, 'ref': names[0], 'n': len(d), 'mean': statistics.mean(d),
+                    'sd': statistics.stdev(d) if len(d) > 1 else 0.0,
+                    'lo': boots[int(.025 * reps)], 'hi': boots[int(.975 * reps) - 1],
+                    'wins': sum(x > 0 for x in d), 'ties': sum(x == 0 for x in d), 'losses': sum(x < 0 for x in d)})
     return out
+
+
+def paired_probes(arms, reps=2000, seed=0):
+    return [f"probe score {s['arm']} - {s['ref']}: {s['mean']:+.3f} (95% CI {s['lo']:+.3f} to {s['hi']:+.3f} over "
+            f"{s['n']} probes; wins/ties/losses {s['wins']}/{s['ties']}/{s['losses']})" for s in paired_probe_stats(arms, reps, seed)]
 
 
 def compare_arms(arms):

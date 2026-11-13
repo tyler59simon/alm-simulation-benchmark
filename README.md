@@ -98,6 +98,14 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 - A recurring trap for the repeated-mistake metric: `tracker.py list --owner` wants a user handle (`tracker.py people`), not a display name (mistake `M4`).
 - Stricter fact patterns in `ground_truth.json`, so capture and retrieval misses are not inflated by loose matches.
 
+## Run log (`docs/`)
+`docs/` is the committed history of every run, in Markdown (`docs/README.md`) and HTML (`docs/index.html`, styled like the Hivemind app). `python -I sim.py docs` regenerates it from `runs/*/` (manifest, `metrics.json`, probe grades), the hand-written notes in `docs/notes/` and the Living Memory repo's merges on main (`lm_repo` in `simkit/config.json`):
+- `docs/runs/<run>`: one page per run with all its statistics, plus its log entry from `docs/notes/runs/<run>.md`.
+- `docs/analysis/<version>`: one page per scenario version (runs compare only within a version): the arms side by side, probes by arm, paired probe differences with bootstrap intervals and a power estimate, and the quiz by fact.
+- `docs/living-memory-changes`: each run with the Living Memory pull requests merged since the previous run, and the ones no run has measured yet.
+
+To add a run: `sim.py analyze --run RUN`, write `docs/notes/runs/RUN.md`, run `sim.py docs`, commit `docs/`. Generated pages replace home-folder paths with `~`. Generated pages are overwritten on every build; the notes are never touched.
+
 ## Tests
 `py -3.10 -m unittest discover -s tests` runs offline harness tests (no agents, no model).
 
