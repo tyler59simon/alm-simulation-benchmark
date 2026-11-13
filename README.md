@@ -76,7 +76,21 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 - Replies are read with `simkit/replies.py`: the first result, plus the text written before any trailing Living Memory housekeeping.
 - Agent sessions get `LIVING_MEMORY_HEADLESS=1`.
 - Probe grades are keyed by the evidence graded; an earlier verdict on identical evidence is reused.
-- `metrics.json` `quiz_repo_reads` lists memory-quiz commands that named a repo path (it should be empty).
+- `metrics.json` `quiz_repo_reads` lists memory-quiz commands that named a repo path or `~/.claude/projects` (it should be empty); `quiz_other_shell` lists every non-Living-Memory shell command in the memory quiz.
+- Quiz scores count every taker x question: an unanswered or ungraded question scores 0 as `missing`. A probe whose session never ran scores 0 (`missing`); an unparsed judge reply leaves the probe unscored (`judge_error`) for a re-grade.
+- Probe evidence holds only tracker and wiki files the session's own tools named or created, and after a merge conflict the diff starts at the main the agent merged in. Source files come before documents, each capped at 4,000 characters.
+- A session that ends without a result event (timeout) has no known cost; `spent()` and the spend limit count its budget cap (`cost_bound_usd`).
+
+## Work metrics (schema 2)
+`analyze` computes these offline from transcripts, git and stores, so older runs can be re-analyzed at no model cost (keep the old file as `metrics.v1.json` first):
+- **Cost split** (`totals`): `work_cost_usd` (work sessions and merge resolves), `chat_cost_usd` (simulated colleagues) and `harness_cost_usd` (quizzes, grading, probe judging). Compare arms on work cost: arm C takes one more quiz than A0 and A1, so its run total carries more harness cost.
+- **Tokens** (`efficiency.*.tokens`): mean input, cache-read, cache-creation and output tokens per session.
+- **Rediscovery** (`rediscovery`): files and searches a session read that the same agent had read in an earlier session, and tool calls before the first edit or commit.
+- **Repeated failures** (`repeat_failures`): tool errors normalized to a signature; an own repeat is an error the agent hit in an earlier session, a team repeat one a teammate hit earlier. Failed Living Memory calls are counted apart (`lm_*`).
+- **Stale actions** (`stale_actions`): code lines a session added that match a fact's stale patterns, after the first scripted message stating the current answer. Heuristic: read the hits before quoting the number.
+- **Ramp-up** (`ramp_up`): joiners' first three sessions' cost, turns and tool calls as a ratio of the steady team's median on the same days.
+- **Regressions** (`app_history`): `app_checks.json` evaluated on main after every CI step; a check that passed and later fails is a regression.
+- **Paired probes** (`compare-arms`): each arm against the first, probe by probe, with a bootstrap 95% interval and win/tie/loss counts.
 
 ## Scenario v3
 `scenarios/bank-cobol-springboot-v3` is v2 plus three fixes found in seed 1 (v2 stays unchanged so its runs reproduce):

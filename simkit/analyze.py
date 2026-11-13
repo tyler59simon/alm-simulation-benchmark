@@ -1,13 +1,16 @@
 """Turn a frozen run folder into metrics.json (fixed schema, so runs compare) plus a short text summary."""
+import fnmatch
 import json
+import random
 import re
 import statistics
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .common import config, read_json, read_jsonl, write_json
+from .common import clean_env, config, read_json, read_jsonl, write_json
 
-SCHEMA = 1
+SCHEMA = 2
 LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'supersede', 'confirm', 'check', 'resolve',
                   'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'learn', 'timeline',
                   'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan')
@@ -170,13 +173,7 @@ def transcript_metrics(path, run_dir, agent):
 
 
 # ---------- app ----------
-def app_checks(run):
-    spec = read_json(run.scenario_dir / run.scenario.get('app_checks', 'app_checks.json'))
-    if not spec:
-        return None
-    root = run.integration / spec.get('root', '.')
-    files = list(root.glob(spec.get('glob', '**/*'))) if root.exists() else []
-    corpus = '\n'.join(p.read_text(encoding='utf-8', errors='replace') for p in files if p.is_file() and 'target' not in p.parts)
+def _eval_checks(spec, corpus):
     out = []
     for c in spec['checks']:
         ok = True
@@ -187,7 +184,77 @@ def app_checks(run):
         if c.get('none'):
             ok &= not any(re.search(p, corpus) for p in c['none'])
         out.append({'fact': c['fact'], 'desc': c['desc'], 'pass': bool(ok)})
-    return {'files': len(files), 'lines': corpus.count('\n'), 'checks': out}
+    return out
+
+
+def app_checks(run):
+    spec = read_json(run.scenario_dir / run.scenario.get('app_checks', 'app_checks.json'))
+    if not spec:
+        return None
+    root = run.integration / spec.get('root', '.')
+    files = list(root.glob(spec.get('glob', '**/*'))) if root.exists() else []
+    corpus = '\n'.join(p.read_text(encoding='utf-8', errors='replace') for p in files if p.is_file() and 'target' not in p.parts)
+    return {'files': len(files), 'lines': corpus.count('\n'), 'checks': _eval_checks(spec, corpus)}
+
+
+def _glob_match(rel, pattern):
+    """Path.glob-like match of a root-relative posix path ('**/' also matches no folder)."""
+    return fnmatch.fnmatch(rel, pattern) or (pattern.startswith('**/') and fnmatch.fnmatch(rel, pattern[3:]))
+
+
+def _corpus_at(repo, sha, root, pattern):
+    """Concatenated text of the files under root matching pattern at commit sha (one git cat-file process)."""
+    env = clean_env({'GIT_TERMINAL_PROMPT': '0'})
+    prefix = '' if root in ('', '.') else root.rstrip('/') + '/'
+    ls = subprocess.run(['git', 'ls-tree', '-r', '--name-only', sha, '--', prefix or '.'], cwd=repo, env=env,
+                        capture_output=True, text=True, encoding='utf-8', errors='replace')
+    paths = [p for p in ls.stdout.splitlines() if p.startswith(prefix) and 'target' not in p.split('/')
+             and _glob_match(p[len(prefix):], pattern)]
+    if not paths:
+        return ''
+    out = subprocess.run(['git', 'cat-file', '--batch'], cwd=repo, env=env, capture_output=True,
+                         input=''.join(f'{sha}:{p}\n' for p in paths).encode('utf-8')).stdout
+    texts, i = [], 0
+    while i < len(out):
+        nl = out.index(b'\n', i)
+        header = out[i:nl].split()
+        if len(header) < 3 or header[1] != b'blob':   # "<spec> missing"
+            i = nl + 1
+            continue
+        size = int(header[2])
+        texts.append(out[nl + 1:nl + 1 + size].decode('utf-8', errors='replace'))
+        i = nl + 1 + size + 1
+    return '\n'.join(texts)
+
+
+def app_check_history(run):
+    """app_checks on main after every CI step: a check that passed and later fails is a regression (work undone)."""
+    spec = read_json(run.scenario_dir / run.scenario.get('app_checks', 'app_checks.json'))
+    if not spec or not run.integration.exists():
+        return None
+    points, last_sha = [], None
+    for row in read_jsonl(run.dir / 'ci.jsonl'):
+        sha = row.get('main')
+        if not sha or sha == last_sha:
+            continue
+        last_sha = sha
+        checks = _eval_checks(spec, _corpus_at(run.integration, sha, spec.get('root', '.'), spec.get('glob', '**/*')))
+        points.append({'label': row.get('label'), 'main': sha, 'pass': [c['pass'] for c in checks]})
+    regressions = []
+    for ci, c in enumerate(spec['checks']):
+        # A check with only 'none' patterns passes on an empty codebase; its passes count once it has failed.
+        vacuous, failed_once, passed_at = not (c.get('all') or c.get('any')), False, None
+        for p in points:
+            if p['pass'][ci]:
+                if failed_once or not vacuous:
+                    passed_at = passed_at or p['label']
+            else:
+                failed_once = True
+            if not p['pass'][ci] and passed_at:
+                regressions.append({'fact': c['fact'], 'desc': c['desc'], 'passed_at': passed_at, 'failed_at': p['label']})
+                passed_at = None
+    return {'points': len(points), 'regression_count': len(regressions), 'regressions': regressions,
+            'first_pass': {c['desc']: next((p['label'] for p in points if p['pass'][ci]), None) for ci, c in enumerate(spec['checks'])}}
 
 
 # ---------- quiz ----------
@@ -197,7 +264,9 @@ GRADE_SCORE = {'correct': 1.0, 'partial': 0.5}
 def quiz_repo_reads(run):
     """Memory-only quiz commands that name the agent's clone, the integration repo or the workspace: a read that the
     deny rules did not catch would let the repo answer for memory."""
-    marks = [str(run.ws), str(run.dir / 'integration'), str(run.workspace) if run.workspace_enabled else None]
+    # Claude Code's own transcripts of the agent's work sessions would also answer for memory.
+    marks = [str(run.ws), str(run.dir / 'integration'), str(run.workspace) if run.workspace_enabled else None,
+             '.claude/projects']
     marks = [m.replace('\\', '/').lower() for m in marks if m]
     found = {}
     for t in sorted((run.transcripts / 'quiz').glob('*.jsonl')):
@@ -214,26 +283,30 @@ def quiz_repo_reads(run):
 
 
 def quiz_metrics(run, per_store, mode='memory'):
+    """Every taker x every question: a question the agent did not answer or the grader did not grade scores 0 as
+    'missing' (an unparsed grade file makes all of that agent's questions missing) instead of leaving the denominator."""
     qs = {q['id']: q for q in run.quiz.get('questions', [])}
     facts = run.truth.get('facts', {})
-    matrix, rows = {}, []
-    grades_dir = (run.dir / 'quiz' if mode == 'memory' else run.dir / 'quiz' / mode) / 'grades'
+    matrix, rows, unparsed = {}, [], []
+    base = run.dir / 'quiz' if mode == 'memory' else run.dir / 'quiz' / mode
+    grades_dir = base / 'grades'
     if not grades_dir.exists():
         return None
-    for p in sorted(grades_dir.glob('*.json')):
-        g = read_json(p, {})
-        agent = g.get('agent', p.stem)
-        matrix[agent] = {x['id']: x.get('grade') for x in g.get('grades', []) if isinstance(x, dict)}
+    takers = sorted({p.stem for d in (base / 'answers', grades_dir) for p in d.glob('*.json')})
+    for agent in takers:
+        g = read_json(grades_dir / f'{agent}.json', {}) or {}
+        if g.get('error'):
+            unparsed.append(agent)
+        matrix[agent] = {x['id']: x.get('grade') for x in g.get('grades', []) if isinstance(x, dict) and x.get('id') in qs}
     for agent, grades in matrix.items():
-        for qid, grade in grades.items():
-            q = qs.get(qid)
-            if not q:
-                continue
+        for qid, q in qs.items():
+            grade = grades.get(qid) or 'missing'
             f = q['fact']
             should = agent in facts.get(f, {}).get('should_know', [])
             in_store = (per_store.get(agent, {}).get('facts', {}).get(f, {}).get('current', 0) > 0)
             ok = grade in GRADE_SCORE
-            kind = 'ok' if ok else ('stale' if grade == 'stale' else 'retrieval_miss' if in_store else 'capture_gap')
+            kind = ('ok' if ok else 'stale' if grade == 'stale' else 'missing' if grade == 'missing'
+                    else 'retrieval_miss' if in_store else 'capture_gap')
             rows.append({'agent': agent, 'q': qid, 'fact': f, 'grade': grade, 'should_know': should, 'in_store': in_store, 'kind': kind})
     def score(sel):
         sel = list(sel)
@@ -244,7 +317,19 @@ def quiz_metrics(run, per_store, mode='memory'):
             'score_not_should_know': score(r for r in rows if not r['should_know']),
             'by_agent': by_agent, 'by_fact_should_know': by_fact,
             'failure_kinds_should_know': dict(Counter(r['kind'] for r in rows if r['should_know'])),
-            'stale_answers': [f"{r['agent']}:{r['q']}" for r in rows if r['grade'] == 'stale']}
+            'stale_answers': [f"{r['agent']}:{r['q']}" for r in rows if r['grade'] == 'stale'],
+            'missing': sum(1 for r in rows if r['grade'] == 'missing'), 'unparsed': unparsed}
+
+
+def quiz_other_shell(run):
+    """Shell commands in memory-only quiz sessions that are not Living Memory calls (the deny list cannot block every
+    read command, e.g. gc, gci, sls or python -c, without also blocking the LM command)."""
+    found = {}
+    for t in sorted((run.transcripts / 'quiz').glob('*.jsonl')):
+        for tool, cmd in _shell_calls(t):
+            if tool in ('Bash', 'PowerShell') and 'living_memory' not in cmd:
+                found.setdefault(t.stem, []).append(cmd[:200])
+    return found
 
 
 # ---------- mistakes, pointers, latency ----------
@@ -291,28 +376,36 @@ def result_mistake(run, mk, sess):
             'total': sum(v['hits'] for v in per.values())}
 
 
+def lint_told(run, rule):
+    """{agent: start of the first session whose prompt showed a violation of this rule}. The #ci-bot message shows only
+    the tail of the CI output and only while main is red, so a red CI row alone does not mean an author saw the rule."""
+    told = {}
+    for r in sorted((r for r in run.state()['sessions'].values() if WORK_KEY.match(r['key'])), key=lambda r: r['started']):
+        p = run.transcripts / f"{r['key']}.prompt.md"
+        if r['agent'] not in told and p.exists() and f'ci-lint {rule}:' in p.read_text(encoding='utf-8', errors='replace'):
+            told[r['agent']] = r['started']
+    return told
+
+
 def lint_mistake(run, mk):
-    """CI lint violations of one rule, by author (git blame). A violation an author introduces after the CI bot already
+    """CI lint violations of one rule, by author (git blame). A violation that first appears after the author's prompt
     showed them that rule is a repeat."""
+    told = lint_told(run, mk['rule'])
     per = defaultdict(lambda: {'violations': 0, 'repeats': 0, 'told_at': None})
     seen = set()
-    for i, row in enumerate(read_jsonl(run.dir / 'ci.jsonl')):
-        authors_now = set()
+    for row in read_jsonl(run.dir / 'ci.jsonl'):
         for v in row.get('lint') or []:
             if v.get('rule') != mk['rule']:
                 continue
             k = (v.get('author'), v['file'], v['text'])
-            authors_now.add(v.get('author'))
             if k in seen:
                 continue
             seen.add(k)
             a = per[v.get('author') or '?']
+            a['told_at'] = told.get(v.get('author'))
             a['violations'] += 1
-            if a['told_at'] is not None and a['told_at'] < i:
+            if a['told_at'] and a['told_at'] < row.get('ts', ''):
                 a['repeats'] += 1
-        for au in authors_now:
-            if per[au or '?']['told_at'] is None:
-                per[au or '?']['told_at'] = i
     return {'desc': mk['desc'], 'kind': 'lint', 'per_agent': dict(per), 'agents_hit': len(per),
             'repeats': sum(v['repeats'] for v in per.values()), 'total': sum(v['violations'] for v in per.values())}
 
@@ -322,6 +415,7 @@ def probe_metrics(run):
     rows = [r for r in rows if r]
     scored = [r['score'] for r in rows if r.get('score') is not None]
     return {'probes': len(rows), 'mean_score': round(sum(scored) / len(scored), 3) if scored else None,
+            'missing': sum(1 for r in rows if r.get('missing')), 'judge_errors': sum(1 for r in rows if r.get('judge_error')),
             'by_probe': {r['id']: r.get('score') for r in rows},
             'cost_usd': round(sum(r.get('cost_usd') or 0 for r in rows), 4),
             'mean_turns': round(sum(r.get('turns') or 0 for r in rows) / len(rows), 1) if rows else None,
@@ -329,8 +423,11 @@ def probe_metrics(run):
             'mean_seconds': round(sum(r.get('seconds') or 0 for r in rows) / len(rows), 1) if rows else None}
 
 
+TOKEN_KEYS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens')
+
+
 def efficiency(run):
-    """Mean cost, turns, tool calls and seconds per session, by kind of session."""
+    """Mean cost, turns, tool calls, seconds and tokens per session, by kind of session."""
     kinds = {'work': WORK_KEY, 'quiz_memory': re.compile(r'^quiz/'), 'quiz_repo': re.compile(r'^quiz-repo/')}
     out = {}
     sess = list(run.state()['sessions'].values())
@@ -340,9 +437,266 @@ def efficiency(run):
             out[name] = {k: round(sum((r.get(f) or 0) for r in rows) / len(rows), 4 if k == 'cost_usd' else 1)
                          for k, f in (('cost_usd', 'cost_usd'), ('turns', 'turns'), ('tool_calls', 'tool_calls'), ('seconds', 'seconds'))}
             out[name]['sessions'] = len(rows)
+            out[name]['tokens'] = {k: round(sum((r.get('usage') or {}).get(k) or 0 for r in rows) / len(rows)) for k in TOKEN_KEYS}
     chat = [r for r in read_jsonl(run.dir / 'costs.jsonl') if str(r.get('key', '')).startswith('chat/')]
     out['chat'] = {'messages': len(chat), 'cost_usd': round(sum(r.get('cost_usd') or 0 for r in chat), 4)}
     return out
+
+
+def cost_split(run):
+    """Known dollars by who spent them: the team's work sessions (merge resolves included), the simulated colleagues
+    (chat), and the harness measuring the run (quizzes, grading, probe judging, audits). Sessions with no recorded cost
+    (no result event) are counted, not guessed."""
+    out = {'work_cost_usd': 0.0, 'chat_cost_usd': 0.0, 'harness_cost_usd': 0.0, 'cost_unknown_sessions': 0}
+    for r in read_jsonl(run.dir / 'costs.jsonl'):
+        key = str(r.get('key', ''))
+        kind = 'work' if WORK_KEY.match(key) else 'chat' if key.startswith('chat/') else 'harness'
+        if r.get('cost_usd') is None:
+            out['cost_unknown_sessions'] += 1
+        out[f'{kind}_cost_usd'] += r.get('cost_usd') or 0
+    return {k: round(v, 4) if isinstance(v, float) else v for k, v in out.items()}
+
+
+# ---------- real-world work metrics (from transcripts and git, no model calls) ----------
+CHANGE_TOOLS = ('Edit', 'Write', 'NotebookEdit', 'MultiEdit')
+READ_SHELL = re.compile(r'(?i)(?:^|[;&|(]|&&)\s*(?:cat|type|gc|get-content|head|tail|less|more)\s+(?:-\S+\s+(?:\d+\s+)?)*'
+                        r'["\']?([^\s"\'|;&<>]+)')
+
+
+def _tool_uses(path):
+    """(name, input) for every tool call in a transcript, in order."""
+    from .replies import events
+    out = []
+    for ev in events(path):
+        msg = ev.get('message')
+        if ev.get('type') != 'assistant' or not isinstance(msg, dict):
+            continue
+        for c in msg.get('content') or []:
+            if isinstance(c, dict) and c.get('type') == 'tool_use':
+                out.append((c.get('name'), c.get('input') if isinstance(c.get('input'), dict) else {}))
+    return out
+
+
+def _norm_path(p, clone):
+    p = str(p).replace('\\', '/').lower()
+    p = re.sub(r'^/([a-z])/', r'\1:/', p)
+    c = clone.replace('\\', '/').lower().rstrip('/') + '/'
+    if p.startswith(c):
+        p = p[len(c):]
+    while p.startswith('./'):
+        p = p[2:]
+    return p
+
+
+def read_targets(uses, clone):
+    """Distinct things a session read: files (Read, cat/type/Get-Content), and Grep/Glob searches."""
+    out = set()
+    for name, inp in uses:
+        if name == 'Read' and inp.get('file_path'):
+            out.add(('file', _norm_path(inp['file_path'], clone)))
+        elif name in ('Grep', 'Glob') and inp.get('pattern'):
+            out.add((name.lower(), inp['pattern'], _norm_path(inp.get('path') or '', clone)))
+        elif name in ('Bash', 'PowerShell'):
+            for m in READ_SHELL.finditer(str(inp.get('command', ''))):
+                out.add(('file', _norm_path(m.group(1), clone)))
+    return out
+
+
+def first_change(uses):
+    """Tool calls made before the session's first edit or commit (None when it changed nothing)."""
+    for i, (name, inp) in enumerate(uses):
+        if name in CHANGE_TOOLS or (name in ('Bash', 'PowerShell') and re.search(r'\bgit\b[^|;&]*\bcommit\b', str(inp.get('command', '')))):
+            return i
+    return None
+
+
+def _work_sessions(run):
+    return sorted((r for r in run.state()['sessions'].values() if WORK_KEY.match(r['key']) and not r['key'].endswith('.resolve')),
+                  key=lambda r: r['started'])
+
+
+def rediscovery(run):
+    """Re-exploration: how much of what a session read the same agent had already read in an earlier session, and how
+    many tool calls a session made before its first change. Memory should lower both; a re-read is not always waste
+    (the file may have changed), so this is a proxy that compares across arms, not an absolute."""
+    seen, rows = defaultdict(set), []
+    for r in _work_sessions(run):
+        t = run.transcripts / f"{r['key']}.jsonl"
+        if not t.exists():
+            continue
+        uses = _tool_uses(t)
+        targets = read_targets(uses, str(run.ws / r['agent']))
+        again = targets & seen[r['agent']]
+        seen[r['agent']] |= targets
+        rows.append({'key': r['key'], 'agent': r['agent'], 'reads': len(targets), 'rereads': len(again), 'before_change': first_change(uses)})
+    if not rows:
+        return None
+    changed = [x['before_change'] for x in rows if x['before_change'] is not None]
+    reads = sum(x['reads'] for x in rows)
+    return {'sessions': len(rows), 'mean_reads': round(reads / len(rows), 2),
+            'mean_rereads': round(sum(x['rereads'] for x in rows) / len(rows), 2),
+            'reread_share': round(sum(x['rereads'] for x in rows) / reads, 3) if reads else None,
+            'mean_calls_before_change': round(statistics.mean(changed), 1) if changed else None,
+            'sessions_without_change': len(rows) - len(changed),
+            'by_agent': {a: {'rereads': sum(x['rereads'] for x in rows if x['agent'] == a),
+                             'reads': sum(x['reads'] for x in rows if x['agent'] == a)} for a in sorted({x['agent'] for x in rows})}}
+
+
+def _tool_errors(path):
+    """(tool name, text) of every tool result marked is_error; the name is suffixed ':lm' for a Living Memory call."""
+    from .replies import events
+    names, out = {}, []
+    for ev in events(path):
+        msg = ev.get('message')
+        content = msg.get('content') if isinstance(msg, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if not isinstance(c, dict):
+                continue
+            if c.get('type') == 'tool_use':
+                names[c.get('id')] = str(c.get('name')) + (':lm' if 'living_memory' in json.dumps(c.get('input', {})) else '')
+            elif c.get('type') == 'tool_result' and c.get('is_error'):
+                t = c.get('content')
+                if isinstance(t, list):
+                    t = '\n'.join(str(x.get('text', '')) if isinstance(x, dict) else str(x) for x in t)
+                out.append((names.get(c.get('tool_use_id')), str(t or '')))
+    return out
+
+
+def error_signature(text):
+    """First meaningful line of an error with paths, numbers and hex ids masked, so the same failure matches across
+    sessions and agents."""
+    lines = [re.sub(r'</?[a-z_]+>', '', l).strip() for l in text.splitlines()]
+    line = next((l for l in lines if l and not re.fullmatch(r'(?i)exit code -?\d+', l)), '')
+    line = re.sub(r'(?i)([a-z]:)?[\\/][^\s\'"`,;)]+', '<path>', line.lower())
+    line = re.sub(r'\b[0-9a-f]{7,40}\b', '#', line)
+    line = re.sub(r'\d+', '#', line)
+    return re.sub(r'\s+', ' ', line)[:120]
+
+
+def repeat_failures(run):
+    """Generic repeated mistakes: an error an agent already hit in an earlier session (own repeat), or that a teammate
+    hit earlier (team repeat: knowledge that could have been shared). Needs no planted trap. Failed Living Memory calls
+    are counted apart (lm_*), so memory-tool friction does not read as a work mistake."""
+    first_by = defaultdict(dict)   # signature -> {agent: first session key}
+    sigs = defaultdict(lambda: {'agents': set(), 'sessions': 0, 'own_repeats': 0, 'team_repeats': 0, 'tool': None})
+    own = team = lm_own = lm_team = 0
+    for r in _work_sessions(run):
+        t = run.transcripts / f"{r['key']}.jsonl"
+        if not t.exists():
+            continue
+        for tool, text in {(tool, error_signature(text)) for tool, text in _tool_errors(t)}:
+            if not text:
+                continue
+            s, a, lm = sigs[text], r['agent'], str(tool).endswith(':lm')
+            s['sessions'] += 1
+            s['tool'] = s['tool'] or tool
+            if a in first_by[text]:
+                s['own_repeats'] += 1
+                own, lm_own = own + (not lm), lm_own + lm
+            elif first_by[text]:
+                s['team_repeats'] += 1
+                team, lm_team = team + (not lm), lm_team + lm
+            first_by[text].setdefault(a, r['key'])
+            s['agents'].add(a)
+    top = sorted(sigs.items(), key=lambda kv: -(kv[1]['own_repeats'] + kv[1]['team_repeats']))[:12]
+    return {'signatures': len(sigs), 'error_sessions': sum(s['sessions'] for s in sigs.values()),
+            'own_repeat_sessions': own, 'team_repeat_sessions': team,
+            'lm_own_repeat_sessions': lm_own, 'lm_team_repeat_sessions': lm_team,
+            'top': [{'signature': k, 'tool': v['tool'], 'agents': len(v['agents']), 'sessions': v['sessions'],
+                     'own_repeats': v['own_repeats'], 'team_repeats': v['team_repeats']} for k, v in top if v['own_repeats'] + v['team_repeats']]}
+
+
+def _label_order(key):
+    m = re.match(r'^s(\d+)(?:d(\d+))?/', key)
+    return (int(m[1]), int(m[2] or 1)) if m else None
+
+
+def _scripted_messages(run):
+    """(sprint, day, text) of every scripted message an agent received: Slack nudges, broadcasts and v1 memos."""
+    ev, out = run.events, []
+    for s, plan in (ev.get('sprints') or {}).items():
+        for item in plan.values() if isinstance(plan, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            for m in item.get('slack') or []:
+                out.append((int(s), m.get('day', 1), m.get('text', '')))
+            if item.get('memo'):
+                out.append((int(s), 1, item['memo'].get('text', '')))
+    for m in ev.get('broadcast') or []:
+        out.append((m['sprint'], m.get('day', 1), m.get('text', '')))
+    return out
+
+
+def stale_from(run, fact):
+    """(sprint, day) of the first scripted message that states the fact's current answer, or None."""
+    cur = [re.compile(p, re.I) for p in fact.get('patterns', {}).get('current', [])]
+    hits = [(s, d) for s, d, text in _scripted_messages(run) if any(r.search(text) for r in cur)]
+    return min(hits) if hits else None
+
+
+def _added_code_lines(repo, a, b):
+    """(file, line) for lines a diff adds outside documents and the captured legacy data."""
+    from .gitops import git
+    out, current = [], None
+    diff = git(repo, 'diff', a, b, '--', '.', ':(exclude)legacy/data', check=False).stdout
+    for line in diff.splitlines():
+        if line.startswith('+++ '):
+            current = line[6:] if line.startswith('+++ b/') else None
+        elif line.startswith('+') and current and not current.lower().endswith(('.md', '.txt', '.html')):
+            out.append((current, line[1:]))
+    return out
+
+
+def stale_actions(run):
+    """Work built on an outdated decision: code lines a session added that match a fact's stale patterns, in sessions
+    after the first scripted message stating the current answer. Heuristic (a comment naming the old rule matches too);
+    read the hits before quoting the number."""
+    facts = {fid: f for fid, f in run.truth.get('facts', {}).items() if f.get('patterns', {}).get('stale')}
+    windows = {fid: stale_from(run, f) for fid, f in facts.items()}
+    out = {fid: {'stale_from': (f's{w[0]}d{w[1]}' if w else None), 'sessions': 0, 'lines': 0, 'hits': []} for fid, w in windows.items()}
+    for r in _work_sessions(run):
+        when = _label_order(r['key'])
+        due = [fid for fid, w in windows.items() if w and when and when >= w]
+        if not due or not (r.get('rev_before') and r.get('rev_after')) or r['rev_before'] == r['rev_after']:
+            continue
+        added = _added_code_lines(run.ws / r['agent'], r['rev_before'], r['rev_after'])
+        for fid in due:
+            pats = [re.compile(p, re.I) for p in facts[fid]['patterns']['stale']]
+            hits = [(f, l) for f, l in added if any(p.search(l) for p in pats)]
+            if hits:
+                o = out[fid]
+                o['sessions'] += 1
+                o['lines'] += len(hits)
+                o['hits'] += [{'session': r['key'], 'file': f, 'line': l.strip()[:120]} for f, l in hits[:3]]
+    for o in out.values():
+        o['hits'] = o['hits'][:10]
+    return {'facts': out, 'stale_lines': sum(o['lines'] for o in out.values()), 'stale_sessions': sum(o['sessions'] for o in out.values())}
+
+
+def ramp_up(run, first=3):
+    """Joiners and handover recipients: their first sessions' cost, turns and tool calls as a ratio of the median of
+    steady teammates on the same days (1.0 = as efficient as the team), plus their probe scores."""
+    joiners = {a['id'] for a in run.scenario['roster'] if a.get('joins', 1) > 1} | {h['to'] for h in run.events.get('handovers', [])}
+    sess = _work_sessions(run)
+    by_day = defaultdict(list)
+    for r in sess:
+        by_day[r['key'].split('/')[0]].append(r)
+    probes_dir = run.dir / 'probes'
+    probe_rows = [read_json(p) or {} for p in sorted(probes_dir.glob('*.json'))] if probes_dir.exists() else []
+    out = {}
+    for j in sorted(joiners):
+        mine = [r for r in sess if r['agent'] == j][:first]
+        ratios = defaultdict(list)
+        for r in mine:
+            peers = [x for x in by_day[r['key'].split('/')[0]] if x['agent'] not in joiners]
+            for f in ('cost_usd', 'turns', 'tool_calls'):
+                vals = [x.get(f) for x in peers if isinstance(x.get(f), (int, float))]
+                if vals and statistics.median(vals) and isinstance(r.get(f), (int, float)):
+                    ratios[f].append(r[f] / statistics.median(vals))
+        out[j] = {'sessions': [r['key'] for r in mine], **{f'{f}_ratio': round(statistics.mean(v), 2) for f, v in ratios.items() if v},
+                  'probe_scores': {p['id']: p.get('score') for p in probe_rows if p.get('agent') == j}}
+    cost = [v['cost_usd_ratio'] for v in out.values() if 'cost_usd_ratio' in v]
+    return {'joiners': out, 'mean_cost_ratio': round(statistics.mean(cost), 2) if cost else None}
 
 
 def live_scenario(run, name):
@@ -466,7 +820,7 @@ def analyze(run):
     work = [r for r in sess if WORK_KEY.match(r['key'])]
     metrics = {
         'schema': SCHEMA, 'run': run.dir.name, 'manifest': run.manifest,
-        'totals': {'sessions': len(sess), 'work_sessions': len(work), 'cost_usd': run.spent(),
+        'totals': {'sessions': len(sess), 'work_sessions': len(work), 'cost_usd': run.spent(), **cost_split(run),
                    'failed_sessions': sum(1 for r in sess if r.get('subtype') != 'success'),
                    'timeouts': sum(1 for r in sess if r.get('timed_out')),
                    'lm_calls': sum(r.get('lm_calls') or 0 for r in sess),
@@ -485,8 +839,11 @@ def analyze(run):
                    'files_swept_uncommitted': sum(r.get('swept') or 0 for r in merges)},
         'handovers': read_jsonl(run.dir / 'handovers.jsonl'), 'app': app_checks(run),
         'options': run.options, 'quiz': quiz_metrics(run, per_store), 'quiz_repo': quiz_metrics(run, per_store, 'repo'), 'quiz_kb': quiz_metrics(run, per_store, 'kb'),
-        'quiz_repo_reads': quiz_repo_reads(run), 'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
+        'quiz_repo_reads': quiz_repo_reads(run), 'quiz_other_shell': quiz_other_shell(run),
+        'mistakes': mistake_metrics(run), 'pointers': pointer_coverage(run), 'hook_latency': hook_latency(run),
         'probes': probe_metrics(run), 'efficiency': efficiency(run),
+        'rediscovery': rediscovery(run), 'repeat_failures': repeat_failures(run), 'stale_actions': stale_actions(run),
+        'ramp_up': ramp_up(run), 'app_history': app_check_history(run),
         'grader_audit': {k: v for k, v in (read_json(run.dir / 'quiz' / 'grader-audit.json') or {}).items() if k != 'rows'} or None,
         'currency': {'updates': sum(s['usage'].get('update', 0) for s in per_store.values()),
                      'supersedes': sum(s['by_status'].get('superseded', 0) for s in per_store.values())}}
@@ -498,7 +855,8 @@ def summary(m):
     t, q, qr = m['totals'], m.get('quiz') or {}, m.get('quiz_repo') or {}
     opts = m.get('options') or {}
     lines = [f"run {m['run']} (memory {opts.get('memory', 'on')}, semantic {opts.get('semantic', False)}): {t['sessions']} sessions, "
-             f"${t['cost_usd']}, failed {t['failed_sessions']}, timeouts {t['timeouts']}",
+             f"${t['cost_usd']} (work ${t.get('work_cost_usd')}, colleagues ${t.get('chat_cost_usd')}, harness ${t.get('harness_cost_usd')}, "
+             f"{t.get('cost_unknown_sessions')} without a cost), failed {t['failed_sessions']}, timeouts {t['timeouts']}",
              f"memory: {t['notes_active']} active notes, {t['maps']} maps, {t['noise_notes']} noise-like, {t['lm_calls']} LM calls "
              f"({t['lm_calls_per_work_session']}/work session), {t['lm_cli_errors']} CLI errors, blocked-path attempts {t['leaks']}",
              f"currency: {(m.get('currency') or {}).get('updates')} updates, {(m.get('currency') or {}).get('supersedes')} superseded; "
@@ -532,6 +890,22 @@ def summary(m):
                          f"{e['tool_calls']} tool calls, {e['seconds']}s")
     if (m.get('efficiency') or {}).get('chat', {}).get('messages'):
         lines.append(f"stakeholder chat: {m['efficiency']['chat']['messages']} messages, ${m['efficiency']['chat']['cost_usd']}")
+    rd, rf, sa, ru, ah = (m.get(k) or {} for k in ('rediscovery', 'repeat_failures', 'stale_actions', 'ramp_up', 'app_history'))
+    if rd:
+        lines.append(f"rediscovery: {rd['mean_rereads']} re-reads per work session (share {rd['reread_share']}), "
+                     f"{rd['mean_calls_before_change']} tool calls before the first change")
+    if rf:
+        lines.append(f"repeated failures: {rf['own_repeat_sessions']} own repeats, {rf['team_repeat_sessions']} team repeats "
+                     f"over {rf['signatures']} error signatures; failed Living Memory calls repeated "
+                     f"{rf.get('lm_own_repeat_sessions')} own, {rf.get('lm_team_repeat_sessions')} team")
+    if sa:
+        lines.append(f"stale actions: {sa['stale_lines']} added code lines in {sa['stale_sessions']} sessions "
+                     f"({ {k: v['stale_from'] for k, v in sa['facts'].items()} })")
+    if ru.get('joiners'):
+        lines.append(f"ramp-up: joiner cost ratio {ru['mean_cost_ratio']} ("
+                     + ', '.join(f"{j} {v.get('cost_usd_ratio')}" for j, v in ru['joiners'].items()) + ')')
+    if ah:
+        lines.append(f"app-check regressions: {ah['regression_count']} over {ah['points']} main commits")
     if m.get('grader_audit'):
         ga = m['grader_audit']
         lines.append(f"grader audit: agreement {ga['agreement']}, false accept {ga['false_accept_rate']}, false reject {ga['false_reject_rate']}")
@@ -586,12 +960,53 @@ ARM_METRICS = (
     ('quiz-repo tool calls', lambda m: ((m.get('efficiency') or {}).get('quiz_repo') or {}).get('tool_calls')),
     ('work $/session', lambda m: ((m.get('efficiency') or {}).get('work') or {}).get('cost_usd')),
     ('work turns/session', lambda m: ((m.get('efficiency') or {}).get('work') or {}).get('turns')),
+    ('work cache-read tok/session', lambda m: (((m.get('efficiency') or {}).get('work') or {}).get('tokens') or {}).get('cache_read_input_tokens')),
+    ('work output tok/session', lambda m: (((m.get('efficiency') or {}).get('work') or {}).get('tokens') or {}).get('output_tokens')),
+    ('work total $', lambda m: (m.get('totals') or {}).get('work_cost_usd')),
+    ('harness $ (quizzes, grading)', lambda m: (m.get('totals') or {}).get('harness_cost_usd')),
     ('run total $', lambda m: (m.get('totals') or {}).get('cost_usd')),
+    ('re-reads/work session', lambda m: (m.get('rediscovery') or {}).get('mean_rereads')),
+    ('re-read share', lambda m: (m.get('rediscovery') or {}).get('reread_share')),
+    ('calls before first change', lambda m: (m.get('rediscovery') or {}).get('mean_calls_before_change')),
+    ('own repeated failures', lambda m: (m.get('repeat_failures') or {}).get('own_repeat_sessions')),
+    ('team repeated failures', lambda m: (m.get('repeat_failures') or {}).get('team_repeat_sessions')),
+    ('repeated failed LM calls', lambda m: sum((m.get('repeat_failures') or {}).get(k) or 0
+                                               for k in ('lm_own_repeat_sessions', 'lm_team_repeat_sessions'))),
+    ('stale code lines', lambda m: (m.get('stale_actions') or {}).get('stale_lines')),
+    ('joiner cost ratio', lambda m: (m.get('ramp_up') or {}).get('mean_cost_ratio')),
+    ('app-check regressions', lambda m: (m.get('app_history') or {}).get('regression_count')),
     ('CI green share', lambda m: round(m['ci']['green'] / m['ci']['runs'], 3) if (m.get('ci') or {}).get('runs') else None),
     ('commit-policy repeat sessions', lambda m: ((m.get('mistakes') or {}).get('M1') or {}).get('repeat_sessions')),
     ('lint repeats (L1+L2)', lambda m: sum(((m.get('mistakes') or {}).get(k) or {}).get('repeats') or 0 for k in ('M2', 'M3'))),
     ('stale notes (D1)', lambda m: len(((m.get('facts') or {}).get('D1') or {}).get('stores_with_stale_only') or [])),
 )
+
+
+def paired_probes(arms, reps=2000, seed=0):
+    """Each arm against the first, probe by probe: mean score difference over the probes both arms ran (each probe's
+    score averaged over that arm's seeds), with a bootstrap 95% interval over probes and win/tie/loss counts."""
+    def per_probe(ms):
+        acc = defaultdict(list)
+        for m in ms:
+            for pid, s in ((m.get('probes') or {}).get('by_probe') or {}).items():
+                if isinstance(s, (int, float)):
+                    acc[pid].append(s)
+        return {pid: statistics.mean(v) for pid, v in acc.items()}
+    names = list(arms)
+    if len(names) < 2:
+        return []
+    ref, out = per_probe(arms[names[0]]), []
+    for name in names[1:]:
+        mine = per_probe(arms[name])
+        d = [mine[p] - ref[p] for p in sorted(set(ref) & set(mine))]
+        if not d:
+            continue
+        rng = random.Random(seed)
+        boots = sorted(statistics.mean(rng.choices(d, k=len(d))) for _ in range(reps))
+        out.append(f"probe score {name} - {names[0]}: {statistics.mean(d):+.3f} (95% CI {boots[int(.025 * reps)]:+.3f} to "
+                   f"{boots[int(.975 * reps) - 1]:+.3f} over {len(d)} probes; wins/ties/losses "
+                   f"{sum(x > 0 for x in d)}/{sum(x == 0 for x in d)}/{sum(x < 0 for x in d)})")
+    return out
 
 
 def compare_arms(arms):
@@ -609,4 +1024,4 @@ def compare_arms(arms):
     out = [f"{'metric'.ljust(width)}  " + '  '.join(n.rjust(22) for n in names)]
     for label, fn in ARM_METRICS:
         out.append(f"{label.ljust(width)}  " + '  '.join(cell([fn(m) for m in arms[n]]).rjust(22) for n in names))
-    return '\n'.join(out)
+    return '\n'.join(out + paired_probes(arms))

@@ -22,7 +22,28 @@ Seeds 2 and 3 were cancelled; `...-191400-A0-s2` is a partial run marked aborted
 | Quiz memory only, should-know | - | - | 0.227 |
 | Steps per probe | 12.0 | 11.9 | 10.3 |
 | Cost per work session | $0.097 | $0.102 | $0.092 |
+| Work cost (work sessions and merge resolves) | $13.73 | $14.46 | $13.14 |
+| Harness cost (quizzes, grading, probe judging) | $2.84 | $3.17 | $4.63 |
 | Run cost | $16.59 | $17.65 | $17.81 |
+
+The run cost includes the harness measuring the run, and arm C takes one more quiz than A0 and A1, so compare arms on
+work cost. The work-cost and harness rows were added on 2026-11-13 by re-analyzing the runs with metrics schema 2 (the
+earlier analysis stays in each run folder as `metrics.v1.json`).
+
+## Schema 2 work metrics (re-analysis, no new runs)
+| Measure | A0 | A1 | C |
+|---|---|---|---|
+| Re-reads per work session | 6.41 | 7.11 | 5.53 |
+| Tool calls before the first change | 11.3 | 12.1 | 11.5 |
+| Repeated work failures (own / team) | 2 / 0 | 3 / 5 | 0 / 4 |
+| Repeated failed Living Memory calls (own / team) | - | - | 6 / 12 |
+| Stale code lines (heuristic) | 15 | 5 | 9 |
+| Joiner cost ratio (2 joiners) | 1.96 | 0.85 | 0.82 |
+| App-check regressions | 1 | 0 | 0 |
+
+Probe score against A0, probe by probe: A1 -0.072 (95% CI -0.378 to +0.250), C -0.128 (95% CI -0.350 to +0.083); neither
+interval excludes zero. Most of C's repeated failed Living Memory calls (13 sessions, 8 agents) are Bash commands that start
+with the PowerShell call operator, `& "python.exe" ".../living_memory.py" ...`, which Bash rejects.
 
 ## Caveats
 - One run per arm: a single probe flipping moves the probe mean by 0.11, so no arm is shown to be better.

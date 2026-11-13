@@ -120,11 +120,13 @@ def merge_agent(run, agent, sprint):
 
 
 def prepare_conflict(run, agent):
-    """Leave the agent's clone mid-merge with origin/main so a resolve session can fix the conflicts."""
+    """Leave the agent's clone mid-merge with origin/main so a resolve session can fix the conflicts. Returns the
+    origin/main commit merged in (the base for grading what the agent itself changed), or None when it merged cleanly."""
     repo = run.ws / agent['id']
     git(repo, 'fetch', '-q', 'origin')
+    main = git(repo, 'rev-parse', 'origin/main').stdout.strip()
     m = git(repo, *HARNESS, 'merge', '--no-edit', 'origin/main', check=False)
-    return m.returncode != 0
+    return main if m.returncode != 0 else None
 
 
 def run_ci(run, label):

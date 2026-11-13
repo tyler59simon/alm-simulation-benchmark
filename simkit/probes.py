@@ -20,6 +20,48 @@ def _ts(s):
         return None
 
 
+DIFF_FILE_CHARS = 4000   # per file, so one large file cannot push the rest of the change out of the evidence
+DOC_SUFFIXES = ('.md', '.txt', '.html', '.csv', '.json', '.yml', '.yaml')
+
+
+def session_text(path):
+    """(tool inputs, tool results) of one session, each lower case with forward slashes (for attribution)."""
+    from .replies import events
+    inputs, results = [], []
+    for ev in events(path):
+        msg = ev.get('message')
+        content = msg.get('content') if isinstance(msg, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if isinstance(c, dict) and c.get('type') == 'tool_use':
+                inputs.append(json.dumps(c.get('input')))
+            elif isinstance(c, dict) and c.get('type') == 'tool_result':
+                results.append(json.dumps(c.get('content')))
+    norm = lambda parts: '\n'.join(parts).replace('\\\\', '/').replace('\\', '/').lower()   # noqa: E731
+    return norm(inputs), norm(results)
+
+
+def touched_by(rel, text):
+    """True when a session's tools named this workspace file (its path, file name or ticket key in a tool input) or
+    created it (`LH-12 created` from tracker.py new). Keys seen only in output, such as a ticket list, do not count."""
+    inputs, results = text
+    rel = rel.lower()
+    key = re.match(r'(lh-\d+)\b', Path(rel).name)
+    return (rel in inputs or Path(rel).name in inputs or bool(key and re.search(rf'\b{key[1]}\b', inputs))
+            or bool(key and f'{key[1]} created' in results))
+
+
+def ordered_diff(diff):
+    """Source files first, documents after, each file capped at DIFF_FILE_CHARS."""
+    chunks = [c if i == 0 else 'diff --git ' + c for i, c in enumerate(diff.split('\ndiff --git ')) if c.strip()]
+    def is_doc(c):
+        first = c.split('\n', 1)[0]
+        return first.split(' b/')[-1].strip().lower().endswith(DOC_SUFFIXES)
+    out = []
+    for c in sorted(chunks, key=is_doc):   # stable: path order within each group
+        out.append(c if len(c) <= DIFF_FILE_CHARS else c[:DIFF_FILE_CHARS] + '\n[... file diff truncated]')
+    return '\n'.join(out)
+
+
 def evidence(run, probe):
     """{'reply', 'diff', 'tracker'} for the probe's session, or None when the session never ran."""
     from .engine import day_label
@@ -29,17 +71,24 @@ def evidence(run, probe):
     row = run.state()['sessions'].get(key)
     if not row:
         return None, key, None
-    tip = next((m.get('tip') for m in reversed(read_jsonl(run.dir / 'merges.jsonl'))
-                if m.get('agent') == probe['agent'] and m.get('label') == label and m.get('tip')), None) or row.get('rev_after')
+    merge = next((m for m in reversed(read_jsonl(run.dir / 'merges.jsonl'))
+                  if m.get('agent') == probe['agent'] and m.get('label') == label and m.get('tip')), {})
+    tip = merge.get('tip') or row.get('rev_after')
+    # After a conflict the branch has origin/main merged in; diffing from that main keeps teammates' work out.
+    base = merge.get('main_merged') or row.get('rev_before')
     diff = ''
-    if row.get('rev_before') and tip:
-        diff = git(run.ws / probe['agent'], 'diff', row['rev_before'], tip, '--', '.', ':(exclude)legacy/data', check=False).stdout
+    if base and tip:
+        diff = ordered_diff(git(run.ws / probe['agent'], 'diff', base, tip, '--', '.', ':(exclude)legacy/data', check=False).stdout)
     t0, t1 = _ts(row.get('started')), _ts(row.get('ended'))
+    # Sessions run in parallel, so a file changed in the window counts only if this session's tools named it.
+    text = session_text(run.transcripts / f'{key}.jsonl')
     tracker = []
     for d in ('tracker', 'wiki'):
         for p in sorted((run.workspace / d).rglob('*')):
             if p.is_file() and t0 and t1 and t0 <= p.stat().st_mtime <= t1 + 5:
-                tracker.append(f"--- {d}/{p.relative_to(run.workspace / d).as_posix()}\n" + p.read_text(encoding='utf-8', errors='replace'))
+                rel = p.relative_to(run.workspace / d).as_posix()
+                if touched_by(f'{d}/{rel}', text):
+                    tracker.append(f"--- {d}/{rel}\n" + p.read_text(encoding='utf-8', errors='replace'))
     ev = {'reply': final_reply(run.transcripts / f'{key}.jsonl', row.get('final') or ''), 'diff': diff, 'tracker': '\n'.join(tracker)}
     return {k: v[:EVIDENCE_CHARS[k]] + ('\n[... truncated]' if len(v) > EVIDENCE_CHARS[k] else '') for k, v in ev.items()}, key, row
 
@@ -83,13 +132,17 @@ def grade_probes(run):
     for probe in run.probes:
         ev, key, row = evidence(run, probe)
         if ev is None:
-            results.append({'id': probe['id'], 'score': None, 'reason': f'session {key} did not run'})
+            # Scored 0 and written, so the probe mean keeps its denominator; `missing` says why.
+            res = {'id': probe['id'], 'agent': probe['agent'], 'facts': probe['facts'], 'session': key, 'score': 0.0,
+                   'missing': True, 'reason': f'session {key} did not run', 'checks': []}
+            write_json(out_dir / f"{probe['id']}.json", res)
+            results.append(res)
             continue
         checks, judged = [], [c for c in probe['checks'] if c['type'] == 'judge']
         for c in probe['checks']:
             if c['type'] == 'regex':
                 checks.append({**c, 'pass': bool(re.search(c['pattern'], _select(ev, c['on']), re.I | re.S))})
-        verdicts = {}
+        verdicts, judge_error = {}, False
         if judged:
             items = '\n'.join(f"- {c['id']} (look at: {c['on']}): {c['rubric']}" for c in judged)
             prompt = ('You are reviewing the work an engineer did on one task, for an engineering-quality study. For each '
@@ -103,14 +156,17 @@ def grade_probes(run):
             reuse_verdict(run, f"probe-grade/{probe['id']}", gkey, prompt)
             r = _session(run, gkey, GRADER, prompt, room, allow=[], deny=NO_TOOLS, settings={'disableAllHooks': True})
             from .engine import full_final
-            verdicts = {i.get('id'): i for i in (_last_json(full_final(run, gkey, r)) or {}).get('items', [])
-                        if isinstance(i, dict)}
+            items = (_last_json(full_final(run, gkey, r)) or {}).get('items')
+            verdicts = {i.get('id'): i for i in items or [] if isinstance(i, dict)}
+            # An unparsed judge reply is a grading failure, not a failed probe: no score, flagged for a re-grade.
+            judge_error = not isinstance(items, list) or any(c['id'] not in verdicts for c in judged)
         for c in judged:
             v = verdicts.get(c['id']) or {}
             checks.append({**c, 'pass': bool(v.get('pass')), 'reason': v.get('reason')})
         total = sum(c['weight'] for c in probe['checks'])
-        score = round(sum(c['weight'] for c in checks if c['pass']) / total, 3) if total else None
+        score = round(sum(c['weight'] for c in checks if c['pass']) / total, 3) if total and not judge_error else None
         res = {'id': probe['id'], 'agent': probe['agent'], 'facts': probe['facts'], 'session': key, 'score': score,
+               'judge_error': judge_error,
                'checks': [{k: c.get(k) for k in ('id', 'type', 'weight', 'pass', 'reason')} for c in checks],
                'cost_usd': row.get('cost_usd'), 'turns': row.get('turns'), 'tool_calls': row.get('tool_calls'), 'seconds': row.get('seconds')}
         write_json(out_dir / f"{probe['id']}.json", res)

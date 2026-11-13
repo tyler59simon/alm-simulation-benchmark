@@ -189,7 +189,7 @@ def short_prompt(run, agent, sprint, day, branch, cover=None):
     for s in ev.get('broadcast', []):
         if s['sprint'] == sprint and s.get('day', 1) == day and (not s.get('to') or agent['id'] in s['to']):
             parts.append(f"FYI, from Slack ({s['channel']}), {s['from']}:\n> " + s['text'].replace('\n', '\n> '))
-    ci = _ci_bot(run, agent, getattr(run, '_last_wave', ()))
+    ci = _ci_bot(run, agent, set(run.state().get('last_wave') or ()))
     if ci:
         parts.append(ci)
     return '\n\n'.join(p.strip() for p in parts if p and p.strip()) + '\n'
@@ -255,8 +255,8 @@ def handovers(run, sprint):
         agents = run.agents()
         ensure_agent(run, agents[h['to']])
         result = {'skipped': 'import_bundle false'}
-        if run.options.get('memory') == 'off':
-            result = {'skipped': 'memory off (control arm)'}
+        if run.options.get('memory') != 'on':
+            result = {'skipped': f"memory {run.options.get('memory')} (no Living Memory in this arm)"}
         elif h.get('import_bundle'):
             result = stores.handover(run.stores / h['from'], run.stores / h['to'], run.scenario['domain'],
                                      run.dir / 'handover' / f"{h['from']}.zip")
@@ -315,15 +315,19 @@ def day(run, n, d):
             ok, detail = gitops.merge_agent(run, a, n)
             if not ok:
                 append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'day': d, 'agent': a['id'], 'ok': False, 'attempt': 1, **detail})
-                if gitops.prepare_conflict(run, a):
+                main_merged = gitops.prepare_conflict(run, a)
+                if main_merged:
                     _session(run, f'{tag}/{a["id"]}.resolve', a, resolve_prompt(run, a, n, detail.get('conflicts', [])), run.ws / a['id'],
                              **({'system_append': identity(run, a)} if system else {}))
                 ok, detail = gitops.merge_agent(run, a, n)
                 detail['attempt'] = 2
+                if main_merged:
+                    detail['main_merged'] = main_merged   # probes diff from here, not from teammates' merged-in work
             append_jsonl(run.dir / 'merges.jsonl', {'ts': now(), 'sprint': n, 'day': d, 'label': tag, 'agent': a['id'], 'ok': ok, **detail})
             log(run, f'merge {a["id"]} {tag}: {"ok" if ok else "FAILED"} {detail}')
         row = gitops.run_ci(run, step)
-        run._last_wave = {a['id'] for a in members}
+        # Persisted so a resumed run builds the same #ci-bot prompts as an uninterrupted one.
+        run.update_state(lambda s: s.__setitem__('last_wave', sorted(a['id'] for a in members)))
         log(run, f'CI after {step}: {"green" if row and row["ok"] else "RED"} ({row and row["seconds"]}s)'
                  + (f" lint={len(row['lint'])}" if row and row.get('lint') else ''))
         run.mark(step)
@@ -481,7 +485,8 @@ def kb_quiz(run, digests_budget=None):
     key = 'quiz-kb/_kb'
     deny = QUIZ_DENY + QUIZ_SHELL_DENY + sessions.deny_rules(run, KB_AGENT['id'])
     deny += [f'{t}({sessions.rule_path(kb)}/**)' for t in ('Read', 'Edit', 'Write')]   # the indexed copy is reachable only through memory
-    _session(run, key, KB_AGENT, body, room, allow=[], deny=deny, system_append=who)
+    # memory='on' whatever the run's arm: the fresh agent answers through Living Memory even on an A0 or A1 run.
+    _session(run, key, KB_AGENT, body, room, allow=[], deny=deny, system_append=who, memory='on')
     write_json(quiz_dir(run, 'kb') / 'answers' / f"{KB_AGENT['id']}.json", {'agent': KB_AGENT['id'], **quiz_answers(run, key)})
     run.mark('quiz-kb')
     grade(run, 'kb')
@@ -501,7 +506,10 @@ def grade(run, mode='memory'):
     for path in sorted((quiz_dir(run, mode) / 'answers').glob('*.json')):
         a = read_json(path)
         out = quiz_dir(run, mode) / 'grades' / path.name
-        if out.exists():
+        # Keyed by the answers graded, so corrected answers are graded afresh rather than served a cached grade.
+        digest = hashlib.sha256(json.dumps(a.get('answers', []), sort_keys=True).encode()).hexdigest()[:8]
+        old = read_json(out) if out.exists() else None
+        if old is not None and old.get('answers_sha', digest) == digest:   # grade files from before the digest stay
             continue
         prompt = ('You are grading a knowledge quiz for a software project. For each question compare the answer with '
                   'the ground truth. Grades: "correct" (all key points right), "partial" (some key points, nothing wrong), '
@@ -509,12 +517,11 @@ def grade(run, mode='memory'):
                   '"unknown" (answered unknown or no answer). Do not use any tools.\n\n'
                   f'QUESTIONS AND GROUND TRUTH\n{key_text}\n\nANSWERS\n{json.dumps(a.get("answers", []), indent=1)}\n\n'
                   'Reply with only a JSON object: {"grades": [{"id": "q1", "grade": "...", "note": "short reason"}, ...]}')
-        # Keyed by the answers graded, so corrected answers are graded afresh rather than served a cached grade.
-        digest = hashlib.sha256(json.dumps(a.get('answers', []), sort_keys=True).encode()).hexdigest()[:8]
         key = (f'grade/{path.stem}' if mode == 'memory' else f'grade-{mode}/{path.stem}') + f'@{digest}'
         row = _session(run, key, grader, prompt, room, allow=[], deny=QUIZ_DENY + ['Bash', 'PowerShell'],
                        settings={'disableAllHooks': True})
-        write_json(out, {'agent': path.stem, **(_last_json(full_final(run, key, row)) or {'error': 'unparsed'})})
+        write_json(out, {'agent': path.stem, 'answers_sha': digest,
+                         **(_last_json(full_final(run, key, row)) or {'error': 'unparsed'})})
     run.mark('grade' if mode == 'memory' else f'grade-{mode}')
 
 

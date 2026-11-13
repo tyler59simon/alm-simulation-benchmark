@@ -42,8 +42,14 @@ def _is_result(line):
     return isinstance(ev, dict) and ev.get('type') == 'result'
 
 
+USAGE_KEYS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens')
+
+
 def parse_transcript(path):
+    """Session id, model, final result event, tool and LM call counts, and token usage summed over assistant messages
+    (the only usage a session killed before its result event leaves behind)."""
     info = {'session_id': None, 'result': None, 'tool_calls': 0, 'lm_calls': 0}
+    usage, seen = dict.fromkeys(USAGE_KEYS, 0), set()
     try:
         lines = Path(path).read_text(encoding='utf-8', errors='replace').splitlines()
     except FileNotFoundError:
@@ -57,13 +63,19 @@ def parse_transcript(path):
             info['session_id'] = ev.get('session_id')
             info['model'] = ev.get('model')
         elif ev.get('type') == 'assistant':
-            for c in (ev.get('message') or {}).get('content') or []:
+            msg = ev.get('message') or {}
+            if isinstance(msg.get('usage'), dict) and msg.get('id') not in seen:   # one message spans several events
+                seen.add(msg.get('id'))
+                for k in USAGE_KEYS:
+                    usage[k] += msg['usage'].get(k) or 0
+            for c in msg.get('content') or []:
                 if c.get('type') == 'tool_use':
                     info['tool_calls'] += 1
                     if 'living_memory' in json.dumps(c.get('input', {})):
                         info['lm_calls'] += 1
         elif ev.get('type') == 'result':
             info['result'] = ev
+    info['assistant_usage'] = usage
     return info
 
 
@@ -76,8 +88,9 @@ def run_rev(cwd):
 
 
 def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), settings=None, timeout_min=30,
-           extra_env=None, system_append=None):
-    """Run `claude -p` with the prompt on stdin. Returns the session row (also appended to costs.jsonl/state)."""
+           extra_env=None, system_append=None, memory=None):
+    """Run `claude -p` with the prompt on stdin. Returns the session row (also appended to costs.jsonl/state).
+    memory overrides the run's arm for this one session (arm D's fresh agent needs Living Memory on any run)."""
     cfg = config()
     out = run.transcripts / f'{key}.jsonl'
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +99,7 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
             '--max-budget-usd', str(tier.get('budget_usd', 1.0)), '--permission-mode', tier.get('permission_mode', 'acceptEdits')]
     if tier.get('effort'):
         args += ['--effort', tier['effort']]
-    memory = run.options.get('memory', 'on')
+    memory = memory or run.options.get('memory', 'on')
     mem_env = {}
     if memory in ('off', 'builtin'):
         # No Living Memory hooks, so no session line: the gated CLAUDE.md protocol block stays inert.
@@ -125,7 +138,10 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
             if time.monotonic() >= deadline:
                 timed_out = True
                 kill_tree(proc.pid)
-                proc.wait(timeout=60)
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.wait()   # as below: an uncaught error here would lose the row and re-pay the session on resume
                 break
             if result_at is None:
                 try:
@@ -155,10 +171,13 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
     row = {'key': key, 'agent': agent['id'], 'tier': agent.get('tier'), 'model': info.get('model') or tier['model'],
            'started': started, 'ended': now(), 'seconds': round(time.time() - t0, 1), 'exit': proc.returncode,
            'timed_out': timed_out, 'ended_after_result': lingered, 'subtype': res.get('subtype'), 'is_error': res.get('is_error'),
-           'cost_usd': res.get('total_cost_usd'), 'turns': res.get('num_turns'), 'usage': res.get('usage'),
+           'cost_usd': res.get('total_cost_usd'), 'turns': res.get('num_turns'), 'usage': res.get('usage') or info['assistant_usage'],
            'session_id': sid, 'session_hash': session_hash(sid) if sid else None,
            'tool_calls': info['tool_calls'], 'lm_calls': info['lm_calls'], 'final': (res.get('result') or '')[-1500:],
            'rev_before': rev_before, 'rev_after': rev(), 'memory': memory}
-    append_jsonl(run.dir / 'costs.jsonl', {k: row[k] for k in ('key', 'agent', 'model', 'cost_usd', 'seconds', 'session_hash')})
+    if row['cost_usd'] is None:
+        # No result event (timeout, crash): the real cost is unknown, so the spend limit counts the session's budget cap.
+        row['cost_bound_usd'] = float(tier.get('budget_usd', 1.0))
+    append_jsonl(run.dir / 'costs.jsonl', {k: row.get(k) for k in ('key', 'agent', 'model', 'cost_usd', 'cost_bound_usd', 'seconds', 'session_hash')})
     run.update_state(lambda s: s['sessions'].__setitem__(key, row))
     return row

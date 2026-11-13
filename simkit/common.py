@@ -177,7 +177,9 @@ class Run:
         self.update_state(lambda s: s['steps'].append(step) if step not in s['steps'] else None)
 
     def spent(self):
-        return round(sum(r.get('cost_usd') or 0 for r in read_jsonl(self.dir / 'costs.jsonl')), 4)
+        """Dollars spent; a session that ended without a result event counts at its budget cap (cost_bound_usd)."""
+        return round(sum(r.get('cost_usd') if r.get('cost_usd') is not None else r.get('cost_bound_usd') or 0
+                         for r in read_jsonl(self.dir / 'costs.jsonl')), 4)
 
     def toolchain_env(self):
         tc = self.scenario.get('toolchain', {})

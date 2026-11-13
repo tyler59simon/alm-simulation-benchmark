@@ -168,6 +168,150 @@ class ProbeVerdictReuse(unittest.TestCase):
         self.assertTrue((run.transcripts / 'probe-grade' / 'PR1@same.jsonl').exists())
 
 
+def git(cwd, *args):
+    import subprocess
+    return subprocess.run(['git', '-c', 'core.autocrlf=false', *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+
+
+class Accounting(unittest.TestCase):
+    def test_session_without_result_counts_at_its_budget(self):
+        from simkit.common import Run, append_jsonl
+        root = Path(tempfile.mkdtemp())
+        (root / 'scenario').mkdir()
+        (root / 'scenario' / 'scenario.json').write_text('{}', encoding='utf-8')
+        append_jsonl(root / 'costs.jsonl', {'key': 's1d1/po', 'cost_usd': 0.25})
+        append_jsonl(root / 'costs.jsonl', {'key': 's1d1/qa', 'cost_usd': None, 'cost_bound_usd': 3.0})
+        append_jsonl(root / 'costs.jsonl', {'key': 'quiz/po', 'cost_usd': 0.5})
+        append_jsonl(root / 'costs.jsonl', {'key': 'chat/po-1', 'cost_usd': 0.01})
+        run = Run(root)
+        self.assertEqual(run.spent(), 3.76)
+        split = analyze.cost_split(run)
+        self.assertEqual((split['work_cost_usd'], split['harness_cost_usd'], split['chat_cost_usd']), (0.25, 0.5, 0.01))
+        self.assertEqual(split['cost_unknown_sessions'], 1)
+
+    def test_usage_is_summed_once_per_message(self):
+        tmp = Path(tempfile.mkdtemp())
+        u = {'input_tokens': 2, 'output_tokens': 10, 'cache_read_input_tokens': 100, 'cache_creation_input_tokens': 5}
+        t = jsonl(tmp / 'a.jsonl', [{'type': 'assistant', 'message': {'id': 'm1', 'usage': u, 'content': [{'type': 'text', 'text': 'a'}]}},
+                                    {'type': 'assistant', 'message': {'id': 'm1', 'usage': u, 'content': [{'type': 'tool_use', 'input': {}}]}},
+                                    {'type': 'assistant', 'message': {'id': 'm2', 'usage': u, 'content': []}}])
+        self.assertEqual(sessions.parse_transcript(t)['assistant_usage']['cache_read_input_tokens'], 200)
+
+
+class QuizDenominator(unittest.TestCase):
+    def test_missing_answers_and_unparsed_grades_score_zero(self):
+        run = FakeRun(tempfile.mkdtemp())
+        run.quiz = {'questions': [{'id': 'q1', 'fact': 'F1'}, {'id': 'q2', 'fact': 'F2'}]}
+        run.truth = {'facts': {'F1': {'should_know': ['po', 'qa']}, 'F2': {'should_know': ['po', 'qa']}}}
+        for a in ('po', 'qa'):
+            jsonl(run.dir / 'quiz' / 'answers' / f'{a}.json', [{}])
+        (run.dir / 'quiz' / 'grades').mkdir(parents=True)
+        (run.dir / 'quiz' / 'grades' / 'po.json').write_text(json.dumps({'agent': 'po', 'grades': [{'id': 'q1', 'grade': 'correct'}]}), encoding='utf-8')
+        (run.dir / 'quiz' / 'grades' / 'qa.json').write_text(json.dumps({'agent': 'qa', 'error': 'unparsed'}), encoding='utf-8')
+        q = analyze.quiz_metrics(run, {})
+        self.assertEqual(q['score_should_know'], 0.25)   # 1 correct of 4, not 1 of 1
+        self.assertEqual(q['missing'], 3)
+        self.assertEqual(q['unparsed'], ['qa'])
+
+
+class ProbeEvidence(unittest.TestCase):
+    def test_tracker_file_counts_only_when_the_session_named_or_created_it(self):
+        listed = ('"py tracker.py list"', '"LH-7 Fee cap  [Todo]  pokonkwo"')
+        self.assertFalse(probes.touched_by('tracker/LH-7-fee-cap.md', listed))
+        self.assertTrue(probes.touched_by('tracker/LH-7-fee-cap.md', ('{"file_path": "c:/ws/tracker/lh-7-fee-cap.md"}', '')))
+        self.assertTrue(probes.touched_by('tracker/LH-12-faq.md', ('"py tracker.py new faq"', '"lh-12 created: c:/x"')))
+        self.assertFalse(probes.touched_by('tracker/LH-1-x.md', ('"py tracker.py show lh-12"', '')))
+
+    def test_diff_puts_source_before_documents_and_caps_each_file(self):
+        doc = 'diff --git a/docs/a.md b/docs/a.md\n' + 'x' * 9000
+        src = 'diff --git a/modern/A.java b/modern/A.java\n+class A {}'
+        out = probes.ordered_diff(doc + '\n' + src)
+        self.assertTrue(out.startswith('diff --git a/modern/A.java'))
+        self.assertIn('[... file diff truncated]', out)
+        self.assertLess(len(out), 5000)
+
+
+class WorkMetrics(unittest.TestCase):
+    def test_error_signature_masks_paths_numbers_and_exit_lines(self):
+        a = analyze.error_signature('Exit code 2\n/usr/bin/bash: eval: line 12: syntax error near unexpected token `&\'')
+        b = analyze.error_signature('Exit code 2\n/usr/bin/bash: eval: line 7: syntax error near unexpected token `&\'')
+        self.assertEqual(a, b)
+        self.assertIn('syntax error', a)
+
+    def test_repeat_failures_own_and_team(self):
+        run = FakeRun(tempfile.mkdtemp())
+        err = {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': 't', 'is_error': True,
+                                                        'content': 'Exit code 1\nerror: pathspec x did not match'}]}}
+        for key in ('s1d1/po', 's1d2/po', 's1d3/qa'):
+            jsonl(run.transcripts / f'{key}.jsonl', [err])
+        run._state['sessions'] = {k: {'key': k, 'agent': k.split('/')[1], 'started': f'2026-11-1{i}T00:00:00+00:00'}
+                                  for i, k in enumerate(('s1d1/po', 's1d2/po', 's1d3/qa'))}
+        rf = analyze.repeat_failures(run)
+        self.assertEqual((rf['own_repeat_sessions'], rf['team_repeat_sessions']), (1, 1))
+
+    def test_rereads_and_calls_before_first_change(self):
+        run = FakeRun(tempfile.mkdtemp())
+        clone = str(run.ws / 'po')
+        read = lambda p: {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'name': 'Read', 'input': {'file_path': p}}]}}  # noqa: E731
+        edit = {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'name': 'Edit', 'input': {'file_path': 'x'}}]}}
+        jsonl(run.transcripts / 's1d1' / 'po.jsonl', [read(clone + '\\README.md'), edit])
+        jsonl(run.transcripts / 's1d2' / 'po.jsonl', [read(clone.replace('\\', '/') + '/README.md'), read('docs/new.md'), edit])
+        run._state['sessions'] = {'s1d1/po': {'key': 's1d1/po', 'agent': 'po', 'started': '1'},
+                                  's1d2/po': {'key': 's1d2/po', 'agent': 'po', 'started': '2'}}
+        rd = analyze.rediscovery(run)
+        self.assertEqual(rd['mean_rereads'], 0.5)
+        self.assertEqual(rd['mean_calls_before_change'], 1.5)
+
+    def test_stale_window_starts_at_the_first_message_with_the_current_answer(self):
+        run = FakeRun(tempfile.mkdtemp())
+        run.events = {'sprints': {'1': {'arch': {'slack': [{'day': 1, 'text': 'Use long cents for money.'}]}},
+                                  '3': {'arch': {'slack': [{'day': 1, 'text': 'All money is BigDecimal with scale 4.'}]}}}}
+        self.assertEqual(analyze.stale_from(run, {'patterns': {'current': ['bigdecimal']}}), (3, 1))
+
+    def test_lint_repeat_needs_the_rule_in_the_authors_prompt(self):
+        run = FakeRun(tempfile.mkdtemp())
+        (run.transcripts / 's1d2').mkdir(parents=True)
+        (run.transcripts / 's1d2' / 'dev.prompt.md').write_text('#ci-bot: main is red\nci-lint L1: A.java:3: System.out', encoding='utf-8')
+        (run.transcripts / 's1d2' / 'ops.prompt.md').write_text('#ci-bot: main is red\n(tail without the rule)', encoding='utf-8')
+        run._state['sessions'] = {'s1d2/dev': {'key': 's1d2/dev', 'agent': 'dev', 'started': '2026-11-11T10:00:00+00:00'},
+                                  's1d2/ops': {'key': 's1d2/ops', 'agent': 'ops', 'started': '2026-11-11T10:00:00+00:00'}}
+        v = lambda a, t: {'rule': 'L1', 'author': a, 'file': 'A.java', 'text': t}   # noqa: E731
+        rows = [{'ts': '2026-11-11T09:00:00+00:00', 'lint': [v('dev', 'a'), v('ops', 'b')]},
+                {'ts': '2026-11-11T11:00:00+00:00', 'lint': [v('dev', 'a'), v('ops', 'b'), v('dev', 'c'), v('ops', 'd')]}]
+        jsonl(run.dir / 'ci.jsonl', rows)
+        m = analyze.lint_mistake(run, {'desc': 'x', 'rule': 'L1'})
+        self.assertEqual(m['per_agent']['dev']['repeats'], 1)
+        self.assertEqual(m['per_agent']['ops']['repeats'], 0)   # red CI, but the rule never reached their prompt
+
+    def test_app_check_history_finds_a_regression(self):
+        repo = Path(tempfile.mkdtemp())
+        git(repo, 'init', '-q', '-b', 'main')
+        git(repo, 'config', 'user.email', 't@x')
+        git(repo, 'config', 'user.name', 't')
+        (repo / 'modern').mkdir()
+        shas = []
+        for text in ('RoundingMode.HALF_EVEN', 'RoundingMode.HALF_UP'):
+            (repo / 'modern' / 'A.java').write_text(text, encoding='utf-8')
+            git(repo, 'add', '-A')
+            git(repo, 'commit', '-q', '-m', 'x')
+            shas.append(git(repo, 'rev-parse', '--short', 'HEAD').strip())
+        self.assertIn('HALF_EVEN', analyze._corpus_at(repo, shas[0], 'modern', '**/*.java'))
+        spec = {'root': 'modern', 'glob': '**/*.java', 'checks': [{'fact': 'T2', 'desc': 'half-even', 'any': ['HALF_EVEN']},
+                                                                  {'fact': 'D1', 'desc': 'no long', 'none': ['HALF_UP']}]}
+        run = FakeRun(tempfile.mkdtemp())
+        run.integration, run.scenario_dir, run.scenario = repo, run.dir, {}
+        (run.dir / 'app_checks.json').write_text(json.dumps(spec), encoding='utf-8')
+        jsonl(run.dir / 'ci.jsonl', [{'label': 'a', 'main': shas[0]}, {'label': 'b', 'main': shas[1]}])
+        h = analyze.app_check_history(run)
+        self.assertEqual([r['fact'] for r in h['regressions']], ['T2'])   # 'none' checks pass vacuously first
+
+    def test_paired_probes_interval(self):
+        arms = {'A0': [{'probes': {'by_probe': {'P1': 0.0, 'P2': 0.5}}}], 'C': [{'probes': {'by_probe': {'P1': 1.0, 'P2': 0.5}}}]}
+        line = analyze.paired_probes(arms)[0]
+        self.assertIn('C - A0: +0.500', line)
+        self.assertIn('1/1/0', line)
+
+
 def load(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
