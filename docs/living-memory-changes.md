@@ -2,7 +2,7 @@
 
 _agentic-living-memory main_
 
-87 merges on main; 57 not yet measured by any run.
+98 merges on main; 68 not yet measured by any run.
 
 ## Reading
 
@@ -91,6 +91,17 @@ Each run with the Living Memory pull requests merged on main since the previous 
 - Stop: a shell command counts as the edit only when it plainly writes (2026-11-14)
 - Stop: shell edits must also not be read-only; accept sed --in-place (2026-11-14)
 - #54 Add a per-session off switch: alm off, alm on, alm status, LIVING_MEMORY_OFF (2026-11-14)
+- Retrieval: resolved bugs and risks stay retrievable in prompts and file hints (UX-C6) (2026-11-14)
+- Retrieval: portable notes from sibling projects on weak matches (UX-C7) (2026-11-14)
+- Retrieval: review fixes for UX-C6 and UX-C7 (2026-11-14)
+- Retrieval: resolve foreign-domain aliases in the prompt's own scope (2026-11-14)
+- Retrieval: a one-word prompt never crosses projects (2026-11-14)
+- Retrieval: a strongly matching resolved bug is placed, not halved (2026-11-15)
+- Retrieval: place a resolved hit from its merged position before reinforcement (2026-11-15)
+- Test clock: shift record time in headless runs for simulations (2026-11-15)
+- eval: measure false injection through the whole prompt hook (2026-11-15)
+- eval: start each hooked case with SessionStart, in its own session (2026-11-15)
+- eval: no auto-resolve or background work in a hooked case's SessionStart (2026-11-15)
 
 
-_87 merges · 5 runs_
+_98 merges · 5 runs_
