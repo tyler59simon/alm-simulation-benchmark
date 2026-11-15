@@ -11,7 +11,8 @@ from pathlib import Path
 HOME = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOME))
 
-from simkit import analyze, engine, probes, replies, sessions  # noqa: E402
+from simkit import analyze, clock, engine, gitops, probes, replies, sessions, stores  # noqa: E402
+from simkit.common import lm_call  # noqa: E402
 
 V3 = HOME / 'scenarios' / 'bank-cobol-springboot-v3'
 
@@ -415,7 +416,7 @@ class ReviewMetrics(unittest.TestCase):
         (root / 'scenario' / 'scenario.json').write_text('{"roster": []}', encoding='utf-8')
         write_note(root / 'stores' / 'po', 'd', 'aaaaaaaa-1', 'Status', 'Now.', ntype='status')
         m = analyze.analyze(Run(root))
-        self.assertEqual(m['schema'], 3)
+        self.assertEqual(m['schema'], 4)
         self.assertEqual(m['totals']['status_snapshots'], 1)
         self.assertNotIn('review', m)
         self.assertNotIn('review', json.loads((root / 'metrics.json').read_text(encoding='utf-8')))
@@ -486,6 +487,496 @@ class SprintReview(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertFalse((run.dir / 'reviews.jsonl').exists())
         self.assertNotIn('s1/review', run._state['steps'])
+
+
+class LmCall(unittest.TestCase):
+    def test_script_form_in_bash_and_powershell(self):
+        self.assertEqual(lm_call('"C:/Python310/python.exe" "C:/Users/a/app/living_memory.py" --domain d search "fee rule"'), 'search')
+        self.assertEqual(lm_call(r'& "C:\Python310\python.exe" "C:\Users\a\app\living_memory.py" --domain d capture --type map'), 'capture')
+        self.assertEqual(lm_call(r"& 'C:\Python310\python.exe' 'C:\Users\a\app\living_memory.py' --json read d:abc"), 'read')
+        self.assertEqual(lm_call('python -I /app/living_memory.py review --limit 100'), 'review')
+
+    def test_alm_launcher_with_global_options(self):
+        self.assertEqual(lm_call('alm --json search "x"'), 'search')
+        self.assertEqual(lm_call('& alm --json --domain bankmod capture --type decision --title "T"'), 'capture')
+        self.assertEqual(lm_call(r'& "C:\Users\a\.local\bin\alm.exe" --json --root "C:\runs\r\stores\po" --domain d recap --days 7'), 'recap')
+        self.assertEqual(lm_call('alm --domain=d --json maintenance history'), 'maintenance')
+        self.assertEqual(lm_call('LIVING_MEMORY_ROOT=/s alm --json capture-finalize --session abc'), 'capture-finalize')
+
+    def test_chains_pipes_and_cd(self):
+        self.assertEqual(lm_call('cd /repo && alm --json search foo | head -20'), 'search')
+        self.assertEqual(lm_call("cd C:\\repo; & alm --json ask 'what is the fee?'"), 'ask')
+
+    def test_variables_functions_and_eval_the_command_defines(self):
+        self.assertEqual(lm_call('PY="C:/Python/python.exe"; LM="C:/app/living_memory.py"; "$PY" "$LM" --root "$R" --domain d capture --type map'), 'capture')
+        self.assertEqual(lm_call(r'$py = "C:\Python\python.exe"; $lm = "C:\app\living_memory.py"; & $py $lm --domain d read abc'), 'read')
+        self.assertEqual(lm_call('lm() { python "C:/app/living_memory.py" --domain d "$@"; }\nS=abc\nlm update d:1 --session $S'), 'update')
+        self.assertEqual(lm_call('''CMD='"python.exe" "living_memory.py" --domain d'; eval "$CMD read d:1 --max-chars 3000"'''), 'read')
+        self.assertEqual(lm_call('PY=python; LM=/a/living_memory.py; for c in "confirm d:1" "capture-finalize"; do "$PY" "$LM" --domain d $c; done'), 'other')
+        self.assertIsNone(lm_call('cd /repo && cat "living_memory.py" >/dev/null; echo done'))
+
+    def test_unknown_subcommand_is_other(self):
+        self.assertEqual(lm_call('alm --json frobnicate'), 'other')
+        self.assertEqual(lm_call('alm'), 'other')
+
+    def test_lookalikes_do_not_match(self):
+        for cmd in ('realm search', 'palm --json search x', 'ls /home/alm/notes', 'cat C:/tools/alm/README.md', 'echo alm search',
+                    'git commit -m "x; alm search"', 'python script.py living_memory', 'grep -r alm src', '', None):
+            self.assertIsNone(lm_call(cmd), cmd)
+
+    def test_new_subcommands_are_known(self):
+        for sub in ('recap', 'ask', 'maintenance', 'changes', 'source-plan', 'source-sync', 'semantic', 'off', 'on', 'status', 'restore', 'log',
+                    'history', 'stats'):
+            self.assertEqual(lm_call(f'alm --json {sub}'), sub)
+
+    def test_transcript_metrics_counts_both_forms(self):
+        tmp = Path(tempfile.mkdtemp())
+        t = jsonl(tmp / 'a.jsonl', [tool('alm --json search x'), tool(LM + ' capture --type map'), tool('ls realm'), tool_result('ok')])
+        m = analyze.transcript_metrics(t, tmp, 'po')
+        self.assertEqual(m['lm_subcommands'], {'search': 1, 'capture': 1})
+        self.assertEqual(sessions.parse_transcript(t)['lm_calls'], 2)
+
+
+def clock_run(days=3, sprints=4, enabled=True, per_sprint=14):
+    run = FakeRun(tempfile.mkdtemp())
+    run.days, run.scenario = days, {'sprints': sprints}
+    run.clock = clock.settings(enabled, '2026-11-14T12:00:00+00:00', {'clock_days_per_sprint': per_sprint})
+    return run
+
+
+class SimulatedCalendar(unittest.TestCase):
+    def setUp(self):
+        self.addCleanup(lambda: clock._current.update(at=None))
+
+    def iso(self, moment):
+        return moment.isoformat(timespec='seconds')
+
+    def test_day_mapping(self):
+        run = clock_run()   # 14 days per sprint, 3 working days: days start 4 days apart
+        self.assertEqual(self.iso(clock.day_time(run, 1, 1)), '2026-11-14T12:00:00+00:00')
+        self.assertEqual(self.iso(clock.day_time(run, 1, 3)), '2026-11-22T12:00:00+00:00')
+        self.assertEqual(self.iso(clock.day_time(run, 2, 1)), '2026-11-28T12:00:00+00:00')
+        self.assertEqual(self.iso(clock.day_time(run, 4, 2)), '2026-12-30T12:00:00+00:00')
+
+    def test_one_working_day_per_sprint(self):
+        run = clock_run(days=1)
+        self.assertEqual(self.iso(clock.day_time(run, 2, 1)), '2026-11-28T12:00:00+00:00')
+
+    def test_review_and_final_phase(self):
+        run = clock_run()
+        self.assertEqual(self.iso(clock.review_time(run, 1)), '2026-11-27T12:00:00+00:00')   # the day before sprint 2 starts
+        self.assertEqual(self.iso(clock.final_time(run)), '2027-01-23T12:00:00+00:00')   # start + (4 + 1) * 14 days
+
+    def test_session_key_maps_to_its_phase(self):
+        run = clock_run()
+        self.assertEqual(clock.session_time(run, 's2d3/po'), clock.day_time(run, 2, 3))
+        self.assertEqual(clock.session_time(run, 's2d3/po.resolve'), clock.day_time(run, 2, 3))
+        self.assertEqual(clock.session_time(run, 's1/po'), clock.day_time(run, 1, 1))
+        for key in ('quiz/po', 'quiz-repo/po', 'quiz-kb/_kb', 'grade/po@abc', 'grade-audit/calibration'):
+            self.assertEqual(clock.session_time(run, key), clock.final_time(run))
+
+    def test_off_gives_nothing(self):
+        run = clock_run(enabled=False)
+        self.assertIsNone(clock.day_time(run, 1, 1))
+        self.assertIsNone(clock.session_time(run, 's1/po'))
+        self.assertEqual(clock.session_env(None), {})
+        clock.enter(run, clock.final_time(run))
+        self.assertEqual((clock.lm_env(), clock.git_env()), ({}, {}))
+
+    def test_env_for_a_session(self):
+        from datetime import datetime, timedelta, timezone
+        real = datetime(2026, 11, 14, 12, 0, 0, tzinfo=timezone.utc)
+        env = clock.session_env(real + timedelta(days=14), real)
+        self.assertEqual(env['LIVING_MEMORY_CLOCK_OFFSET_SECONDS'], '1209600.000')
+        self.assertEqual(env['LIVING_MEMORY_HEADLESS'], '1')
+        self.assertEqual(env['GIT_AUTHOR_DATE'], '2026-11-28T12:00:00+00:00')
+        self.assertEqual(env['GIT_COMMITTER_DATE'], env['GIT_AUTHOR_DATE'])
+
+    def launch_env(self, run, key):
+        seen = {}
+
+        class Proc:
+            returncode = 0
+
+            def __init__(self, args, **kw):
+                seen['env'] = kw['env']
+                self.stdin = type('In', (), {'write': lambda s, x: None, 'close': lambda s: None})()
+
+            def poll(self):
+                return 0
+
+        tmp = Path(tempfile.mkdtemp())
+        run.transcripts, run.options, run.workspace_enabled = tmp, {'memory': 'on'}, False
+        run.toolchain_env = lambda: ({}, ())
+        run.update_state = lambda fn: None
+        run.dir = tmp
+        saved = (sessions.subprocess.Popen, sessions.config, sessions.run_rev)
+        sessions.subprocess.Popen, sessions.config, sessions.run_rev = Proc, (lambda: {'claude': 'claude'}), (lambda cwd: None)
+        os.environ['LIVING_MEMORY_CLOCK_OFFSET_SECONDS'] = '5'   # a stale inherited value must never leak into a child
+        try:
+            row = sessions.launch(run, key, {'id': 'po'}, 'hi', str(tmp), tmp, {'model': 'm'})
+        finally:
+            del os.environ['LIVING_MEMORY_CLOCK_OFFSET_SECONDS']
+            sessions.subprocess.Popen, sessions.config, sessions.run_rev = saved
+        return seen['env'], row
+
+    def test_session_env_with_the_clock_on(self):
+        from datetime import datetime, timezone
+        run = clock_run()
+        env, row = self.launch_env(run, 's2d1/po')
+        want = clock.day_time(run, 2, 1)
+        self.assertLess(abs(float(env['LIVING_MEMORY_CLOCK_OFFSET_SECONDS']) - (want - datetime.now(timezone.utc)).total_seconds()), 60)
+        self.assertEqual(env['GIT_AUTHOR_DATE'], '2026-11-28T12:00:00+00:00')
+        self.assertEqual(env['GIT_COMMITTER_DATE'], '2026-11-28T12:00:00+00:00')
+        self.assertEqual(env['LIVING_MEMORY_HEADLESS'], '1')
+        self.assertEqual(row['sim_time'], '2026-11-28T12:00:00+00:00')
+
+    def test_session_env_with_the_clock_off(self):
+        env, row = self.launch_env(clock_run(enabled=False), 's2d1/po')
+        self.assertNotIn('LIVING_MEMORY_CLOCK_OFFSET_SECONDS', env)   # the stale inherited value was stripped
+        self.assertNotIn('GIT_AUTHOR_DATE', env)
+        self.assertNotIn('sim_time', row)
+
+    def test_harness_calls_use_the_phase_time(self):
+        run = clock_run()
+        calls = []
+        saved = (stores.run_cmd, gitops.run_cmd)
+        done = lambda *a, **k: type('R', (), {'stdout': '{}', 'stderr': '', 'returncode': 0})()   # noqa: E731
+        stores.run_cmd = lambda args, **kw: calls.append(('lm', kw['env'])) or done()
+        gitops.run_cmd = lambda args, **kw: calls.append(('git', kw['env'])) or done()
+        self.addCleanup(lambda: (setattr(stores, 'run_cmd', saved[0]), setattr(gitops, 'run_cmd', saved[1])))
+        clock.enter(run, clock.day_time(run, 3, 2))
+        stores.lm(Path(tempfile.mkdtemp()), ['doctor'])
+        gitops.git('.', 'status')
+        lm_env, git_env = calls[0][1], calls[1][1]
+        self.assertIn('LIVING_MEMORY_CLOCK_OFFSET_SECONDS', lm_env)
+        self.assertEqual(lm_env['LIVING_MEMORY_HEADLESS'], '1')
+        self.assertEqual(git_env['GIT_AUTHOR_DATE'], '2026-12-16T12:00:00+00:00')
+        clock.enter(clock_run(enabled=False), None)
+        calls.clear()
+        stores.lm(Path(tempfile.mkdtemp()), ['doctor'])
+        gitops.git('.', 'status')
+        self.assertNotIn('LIVING_MEMORY_CLOCK_OFFSET_SECONDS', calls[0][1])
+        self.assertNotIn('GIT_AUTHOR_DATE', calls[1][1])
+
+    def test_set_clock_records_the_simulated_time_without_a_workspace_flag(self):
+        run = clock_run()
+        run.workspace_enabled = False
+        engine.set_clock(run, 2, 3)
+        row = json.loads((run.workspace / '.clock.json').read_text(encoding='utf-8'))
+        self.assertEqual((row['sprint'], row['day'], row['label'], row['time']), (2, 3, 's2d3', '2026-12-06T12:00:00+00:00'))
+        off = clock_run(enabled=False)
+        engine.set_clock(off, 1, 1)
+        self.assertNotIn('time', json.loads((off.workspace / '.clock.json').read_text(encoding='utf-8')))
+
+
+class Manifest(unittest.TestCase):
+    def test_repo_commit_and_cli_version_are_null_on_failure(self):
+        self.assertIsNone(engine.lm_repo_commit({'lm_repo': str(Path(tempfile.mkdtemp()) / 'nope')}))
+        self.assertIsNone(engine.lm_cli_version({'python': 'no-such-python-xyz', 'lm_cli': 'x.py'}))
+        self.assertIsNone(engine.lm_cli_version({}))
+
+    def test_cli_version_parses_the_last_json_line(self):
+        saved = engine.run_cmd
+        engine.run_cmd = lambda *a, **k: type('R', (), {'stdout': 'noise\n{"ok": true, "api": 2}\n', 'returncode': 0})()
+        self.addCleanup(lambda: setattr(engine, 'run_cmd', saved))
+        self.assertEqual(engine.lm_cli_version({'python': 'p', 'lm_cli': 'c'}), {'ok': True, 'api': 2})
+
+
+REAL_REVIEW = {   # `alm --json --domain D review --limit 100` on a store with a due note and a duplicate pair (ALM main at #54)
+    'ok': True, 'domain': 'lighthouse', 'due': 2, 'stale_digests': 0, 'kinds': ['stale', 'due', 'interim', 'duplicate', 'warned', 'noisy'],
+    'counts': {'stale': 0, 'due': 1, 'interim': 0, 'duplicate': 1, 'warned': 0, 'noisy': 0},
+    'notes': [{'ref': 'lighthouse:92acd811-39fc-4970-99c4-4790d3f3c38e', 'title': 'Old fee rule', 'type': 'knowledge', 'updated': '2026-11-15',
+               'review_by': '2026-01-01', 'confirmed': None, 'pinned': False, 'domain': 'lighthouse', 'kinds': ['due'],
+               'reason': 'review date 2026-01-01 has passed', 'action': 'confirm', 'maintenance': {'permitted': ['keep'], 'protected': None}},
+              {'ref': 'lighthouse:81aabcbe-0d41-47e9-bd54-9216df4e584b', 'title': 'Old fee rule copy', 'type': 'knowledge', 'kinds': ['duplicate'],
+               'reason': 'title 1.00 like lighthouse:92acd811-39fc-4970-99c4-4790d3f3c38e Old fee rule', 'action': 'supersede',
+               'pair': {'ref': 'lighthouse:92acd811-39fc-4970-99c4-4790d3f3c38e', 'title': 'Old fee rule', 'score': 1.0}}],
+    'hint': '...'}
+
+
+class RealShapes(unittest.TestCase):
+    def stub_lm(self, handler):
+        saved = engine.stores.lm
+        engine.stores.lm = handler
+        self.addCleanup(lambda: setattr(engine.stores, 'lm', saved))
+
+    def test_fetch_review_reads_the_real_worklist_shape(self):
+        self.stub_lm(lambda store, args, **kw: REAL_REVIEW)
+        got = engine.fetch_review('s', 'lighthouse')
+        self.assertEqual((got['total'], got['counts']['duplicate'], len(got['items'])), (2, 1, 2))
+        self.assertEqual([analyze.row_kind(r) for r in got['items']], ['due', 'duplicate'])
+        self.assertEqual(got['items'][1]['pair']['ref'], 'lighthouse:92acd811-39fc-4970-99c4-4790d3f3c38e')
+
+    def test_review_metrics_on_the_real_shape(self):
+        run = FakeRun(tempfile.mkdtemp())
+        run.truth, run.stores = TRUTH, run.dir / 'stores'
+        write_note(run.stores / 'po', 'lighthouse', '92acd811-39fc-4970-99c4-4790d3f3c38e', 'Old fee rule', 'Interest uses actual/365 for savings.')
+        write_note(run.stores / 'po', 'lighthouse', '81aabcbe-0d41-47e9-bd54-9216df4e584b', 'Old fee rule copy', 'Interest uses actual/365 for savings.')
+        jsonl(run.dir / 'reviews.jsonl', [{'sprint': 1, 'agent': 'po', 'counts': REAL_REVIEW['counts'], 'total': REAL_REVIEW['due'],
+                                           'items': REAL_REVIEW['notes']}])
+        m = analyze.review_metrics(run)
+        self.assertEqual(m['review_rows'], {'1': {'stale': 0, 'due': 1, 'interim': 0, 'duplicate': 1, 'warned': 0, 'noisy': 0}})
+        self.assertEqual(m['by_kind']['due'], {'rows': 1, 'judged': 1, 'real': 1})
+        self.assertEqual(m['by_kind']['duplicate'], {'rows': 1, 'judged': 1, 'real': 1})
+
+
+REAL_STATS = {'ok': True, 'days': 30, 'domains': ['lighthouse', '_global'], 'events': 40, 'sessions_with_injections': 3, 'notes': 5, 'noisy': [],
+              'used': [], 'reminders': {'fix': 2, 'decision': 1}, 'signal_captures': {},
+              'capture_coverage': {'days': 30, 'mutating': 4, 'covered': 3, 'ratio': 0.75}}
+REAL_LOG = {'ok': True, 'count': 3, 'rows': [
+    {'time': 't1', 'event': 'created', 'ref': 'd:1', 'title': 'a', 'type': 'plan', 'domain': 'd', 'projects': [], 'op': 'o1', 'summary': 's', 'actor': 'agent:po'},
+    {'time': 't2', 'event': 'resolved', 'ref': 'd:1', 'title': 'a', 'type': 'plan', 'domain': 'd', 'projects': [], 'op': 'o2', 'summary': 's', 'actor': 'auto_resolve'},
+    {'time': 't3', 'event': 'archived', 'ref': 'd:2', 'title': 'b', 'type': 'knowledge', 'domain': 'd', 'projects': [], 'op': 'o3', 'summary': 's', 'actor': 'maintenance'}]}
+REAL_RECAP = {'ok': True, 'days': 90, 'counts': {'created': 5}, 'maintenance': {'runs': 0, 'charged_usd': '0.00'}, 'sessions': {'count': 0},
+              'open_work': {'notes': 1}, 'review': {'due': 1, 'by_kind': {'due': 1}}, 'markdown': '# Recap'}
+
+
+class Readout(unittest.TestCase):
+    def make_run(self, memory='on'):
+        run = FakeRun(tempfile.mkdtemp())
+        run.options = {'memory': memory}
+        run.scenario = {'domain': 'd', 'roster': [{'id': 'po'}, {'id': 'qa'}]}
+        run.stores = run.dir / 'stores'
+        for a in ('po', 'qa'):
+            (run.stores / a).mkdir(parents=True)
+        run.agents = lambda: {a['id']: a for a in run.scenario['roster']}
+        run.done = lambda step: step in run._state['steps']
+        run.mark = lambda step: run._state['steps'].append(step)
+        run.truth = TRUTH
+        return run
+
+    def stub(self):
+        calls = []
+
+        def lm(store, args, payload=None, actor=None, cwd=None):
+            name = Path(store).name
+            sub = next(a for a in args[2:] if a in ('stats', 'log', 'recap', 'maintenance', 'review'))
+            calls.append((name, list(args)))
+            if sub == 'recap' and '120' in args:
+                raise RuntimeError('living_memory recap failed: {"ok":false,"error":{"message":"--days must be 1 to 90"}}')
+            if name == 'qa' and sub == 'maintenance':
+                raise RuntimeError('living_memory maintenance failed: unknown command')
+            return {'stats': REAL_STATS, 'log': dict(REAL_LOG), 'recap': dict(REAL_RECAP), 'maintenance': {'ok': True, 'runs': []},
+                    'review': REAL_REVIEW}[sub]
+        saved = engine.stores.lm
+        engine.stores.lm = lm
+        self.addCleanup(lambda: setattr(engine.stores, 'lm', saved))
+        return calls
+
+    def test_readout_writes_every_command_and_records_errors(self):
+        run = self.make_run()
+        calls = self.stub()
+        engine.review_at_quiz(run)
+        engine.readout(run)
+        data = json.loads((run.dir / 'stores-readout.json').read_text(encoding='utf-8'))
+        po, qa = data['stores']['po'], data['stores']['qa']
+        self.assertEqual(po['stats']['capture_coverage']['ratio'], 0.75)
+        self.assertEqual(len(po['log']['rows']), 3)
+        self.assertNotIn('markdown', po['recap'])
+        self.assertEqual(po['days_used'], {'stats': 120, 'recap': 90})   # recap is capped at 90 days: retried
+        self.assertEqual(po['review_at_quiz']['total'], 2)
+        self.assertEqual(po['errors'], {})
+        self.assertIn('maintenance_history', qa['errors'])
+        self.assertIsNone(qa['maintenance_history'])
+        self.assertIn(('po', ['--domain', 'd', 'stats', '--days', '120', '--json']), calls)
+        self.assertIn(('po', ['--domain', 'd', 'maintenance', 'history', '--limit', '1000', '--json']), calls)
+        self.assertIn('readout', run._state['steps'])
+        n = len(calls)
+        engine.readout(run)   # resumed: nothing is asked twice
+        self.assertEqual(len(calls), n)
+
+    def test_no_readout_without_living_memory(self):
+        run = self.make_run(memory='builtin')
+        calls = self.stub()
+        engine.readout(run)
+        engine.review_at_quiz(run)
+        self.assertEqual(calls, [])
+        self.assertFalse((run.dir / 'stores-readout.json').exists())
+
+    def test_schema_4_metrics(self):
+        run = self.make_run()
+        self.stub()
+        engine.review_at_quiz(run)
+        engine.readout(run)
+        # po: a fix reminder then a capture in the same session, and a denied call operator;
+        # qa: a fix reminder with only an earlier capture, and a reminder of another kind
+        jsonl(run.stores / 'po' / 'logs' / 'log-1.jsonl', [
+            {'kind': 'hook', 'event': 'stop', 'session': 's1', 'ts': '2026-11-11T10:00:00', 'detail': {'reason': 'reminded:fix'}},
+            {'kind': 'command', 'event': 'capture', 'session': 's1', 'ts': '2026-11-11T10:01:00', 'exit_code': 0},
+            {'kind': 'hook', 'event': 'pre-tool-use', 'session': 's1', 'ts': '2026-11-11T09:00:00', 'detail': {'decision': 'deny:call-operator'}}])
+        jsonl(run.stores / 'qa' / 'logs' / 'log-1.jsonl', [
+            {'kind': 'command', 'event': 'capture', 'session': 's2', 'ts': '2026-11-11T09:00:00', 'exit_code': 0},
+            {'kind': 'hook', 'event': 'stop', 'session': 's2', 'ts': '2026-11-11T10:00:00', 'detail': {'reason': 'reminded:fix'}},
+            {'kind': 'hook', 'event': 'stop', 'session': 's3', 'ts': '2026-11-11T10:00:00', 'detail': {'reason': 'reminded:doc'}}])
+        r = analyze.readout_metrics(run)
+        self.assertEqual(r['capture_coverage']['mean_ratio'], 0.75)
+        self.assertEqual(r['capture_coverage']['per_store']['po'], {'days': 30, 'mutating': 4, 'covered': 3, 'ratio': 0.75})
+        self.assertEqual(r['reminders_by_kind'], {'fix': 4, 'decision': 2})
+        self.assertEqual(r['actors'], {'agent:po': 2, 'auto_resolve': 2, 'maintenance': 2})
+        self.assertEqual(r['auto_resolved'], 2)
+        self.assertEqual(r['due_at_quiz'], {'per_store': {'po': 2, 'qa': 2}, 'total': 4})
+        self.assertEqual(r['fix_reminder_followthrough'], {'reminded_sessions': 2, 'followed': 1, 'rate': 0.5})
+        self.assertEqual(r['call_operator_denies'], 1)
+
+    def test_absent_readout_is_empty_not_a_crash(self):
+        run = self.make_run()
+        r = analyze.readout_metrics(run)
+        self.assertEqual((r['capture_coverage'], r['reminders_by_kind'], r['actors'], r['auto_resolved'], r['due_at_quiz']),
+                         (None, {}, {}, None, None))
+        self.assertEqual(r['fix_reminder_followthrough'], {'reminded_sessions': 0, 'followed': 0, 'rate': None})
+        self.assertEqual(r['call_operator_denies'], 0)
+        for _, fn in analyze.ARM_METRICS:
+            fn({'readout': r})
+            fn({})
+
+    def test_compare_arms_lists_the_new_metrics(self):
+        r = {'capture_coverage': {'mean_ratio': 0.5}, 'reminders_by_kind': {'fix': 2}, 'fix_reminder_followthrough': {'rate': 1.0},
+             'auto_resolved': 3, 'due_at_quiz': {'total': 7}, 'call_operator_denies': 1}
+        table = analyze.compare_arms({'C': [{'readout': r}]})
+        for label in ('capture coverage (mean ratio)', 'fix reminder follow-through', 'auto-resolved notes', 'review worklist at quiz',
+                      'call-operator denies'):
+            self.assertIn(label, table)
+
+
+class SprintStats(unittest.TestCase):
+    def test_window_starts_on_the_first_day_and_does_not_overlap(self):
+        from datetime import timedelta
+        run = clock_run()
+        self.assertEqual(engine.stats_window(run), 13)
+        for s in (1, 2, 3):   # the snapshot at review time s covers (review_time(s) - 13 days, review_time(s)]
+            begin = clock.review_time(run, s) - timedelta(days=13)
+            self.assertEqual(begin, clock.day_time(run, s, 1))
+            if s > 1:
+                self.assertGreaterEqual(begin, clock.review_time(run, s - 1))
+        self.assertEqual(engine.stats_window(clock_run(per_sprint=60)), 30)
+
+    def test_review_takes_a_stats_snapshot_only_with_the_clock(self):
+        for enabled, want in ((True, 2), (False, 0)):
+            run = SprintReview.make_run(SprintReview(), memory='on')
+            run.clock = clock.settings(enabled, '2026-11-14T12:00:00+00:00', {'clock_days_per_sprint': 14})
+            run.days, run.scenario['sprints'] = 3, 4
+            seen = []
+
+            def lm(store, args, payload=None, actor=None, cwd=None):
+                seen.append(args)
+                return {'ok': True, 'due': 0, 'counts': {}, 'notes': [], 'reminders': {'fix': 1}, 'capture_coverage': {'mutating': 2, 'covered': 1}}
+            saved = engine.stores.lm
+            engine.stores.lm = lm
+            try:
+                engine.review(run, 1)
+            finally:
+                engine.stores.lm = saved
+            path = run.dir / 'stats.jsonl'
+            rows = [json.loads(x) for x in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
+            self.assertEqual(len(rows), want)
+            if want:
+                self.assertIn(['--domain', 'd', 'stats', '--days', '13', '--json'], seen)
+
+    def test_metrics_sum_the_sprint_snapshots_and_fall_back(self):
+        run = Readout().make_run()
+        (run.dir / 'stores-readout.json').write_text(json.dumps({'recap_days_needed': 70, 'recap_truncated': False, 'stores': {
+            'po': {'stats': REAL_STATS, 'log': {'rows': []}}, 'qa': {'stats': REAL_STATS, 'log': {'rows': []}}}}), encoding='utf-8')
+        snap = lambda m, c, r: {'capture_coverage': {'days': 13, 'mutating': m, 'covered': c}, 'reminders': r}   # noqa: E731
+        jsonl(run.dir / 'stats.jsonl', [{'sprint': 1, 'agent': 'po', 'days': 13, 'stats': snap(4, 2, {'fix': 1})},
+                                        {'sprint': 2, 'agent': 'po', 'days': 13, 'stats': snap(2, 2, {'fix': 2, 'doc': 1})},
+                                        {'sprint': 1, 'agent': 'qa', 'error': 'boom'}])
+        r = analyze.readout_metrics(run)
+        self.assertEqual(r['capture_coverage']['per_store']['po'], {'days': 26, 'mutating': 6, 'covered': 4, 'ratio': 0.67, 'source': 'sprints'})
+        self.assertEqual(r['capture_coverage']['per_store']['qa']['ratio'], 0.75)   # no usable snapshot: the end-of-run stats
+        self.assertEqual(r['reminders_by_kind'], {'fix': 5, 'doc': 1, 'decision': 1})
+        self.assertEqual((r['recap_days_needed'], r['recap_truncated']), (70, False))
+
+    def test_recap_window_covers_a_clocked_run(self):
+        run = Readout().make_run()
+        run.clock = clock.settings(True, '2026-11-14T12:00:00+00:00', {'clock_days_per_sprint': 20})
+        run.scenario['sprints'] = 4   # 100 simulated days: longer than recap's 90
+        asked = []
+        saved = engine.stores.lm
+        engine.stores.lm = lambda store, args, **kw: asked.append(args) or {'ok': True}
+        try:
+            engine.readout(run)
+        finally:
+            engine.stores.lm = saved
+        self.assertIn(['--domain', 'd', 'recap', '--days', '90', '--json'], asked)
+        data = json.loads((run.dir / 'stores-readout.json').read_text(encoding='utf-8'))
+        self.assertEqual((data['recap_days_needed'], data['recap_truncated']), (101, True))
+
+
+class CodexFindings(unittest.TestCase):
+    def test_function_body_is_expanded_at_the_call(self):
+        self.assertEqual(lm_call('PY=python; LM=/app/living_memory.py; lm() { "$PY" "$LM" "$@"; }; lm capture --type map'), 'capture')
+
+    def test_a_path_with_spaces_stays_one_word(self):
+        self.assertEqual(lm_call('PY="C:/Program Files/Python/python.exe"; LM=/app/living_memory.py; "$PY" "$LM" capture'), 'capture')
+        self.assertEqual(lm_call('CMD=\'"C:/Program Files/Python/python.exe" "/app/living_memory.py" --domain d\'; $CMD read x'), 'read')
+
+    def test_readout_runs_after_the_final_phase(self):
+        from datetime import timedelta
+        run = clock_run()
+        self.assertEqual(clock.readout_time(run), clock.final_time(run) + timedelta(days=1))
+        self.assertIsNone(clock.readout_time(clock_run(enabled=False)))
+        seen = []
+        run = Readout().make_run()
+        run.clock = clock.settings(True, '2026-11-14T12:00:00+00:00', {'clock_days_per_sprint': 14})
+        run.scenario['sprints'] = 4
+        saved = engine.stores.lm
+        engine.stores.lm = lambda store, args, **kw: seen.append(clock.current()) or {'ok': True}
+        self.addCleanup(lambda: (setattr(engine.stores, 'lm', saved), clock._current.update(at=None)))
+        engine.readout(run)
+        self.assertEqual(set(seen), {clock.readout_time(run)})
+
+    def test_a_resumed_review_counts_one_snapshot_per_store_and_sprint(self):
+        run = Readout().make_run()
+        (run.dir / 'stores-readout.json').write_text(json.dumps({'stores': {'po': {'stats': REAL_STATS, 'log': {'rows': []}}}}), encoding='utf-8')
+        snap = lambda m, c: {'capture_coverage': {'days': 13, 'mutating': m, 'covered': c}, 'reminders': {'fix': 1}}   # noqa: E731
+        jsonl(run.dir / 'stats.jsonl', [{'sprint': 1, 'agent': 'po', 'stats': snap(4, 2)}, {'sprint': 1, 'agent': 'po', 'stats': snap(5, 3)},
+                                        {'sprint': 1, 'agent': 'po', 'error': 'boom'}, {'sprint': 2, 'agent': 'po', 'stats': snap(1, 1)}])
+        r = analyze.readout_metrics(run)
+        self.assertEqual((r['capture_coverage']['per_store']['po']['mutating'], r['capture_coverage']['per_store']['po']['covered']), (6, 4))
+        self.assertEqual(r['reminders_by_kind'], {'fix': 2})
+
+    def test_digest_step_gets_the_phase_clock(self):
+        run = clock_run()
+        calls = []
+        tmp = Path(tempfile.mkdtemp())
+        app = tmp / 'app'
+        (app / 'scripts').mkdir(parents=True)
+        (app / 'scripts' / 'ingest_run.py').write_text('', encoding='utf-8')
+        run.dir, run.stores, run.origin = tmp, tmp / 'stores', tmp / 'origin'
+        run.workspace_enabled, run.quiz = False, {'intro': 'i', 'questions': []}
+        run.scenario.update(domain='d')
+        done = set()
+        run.done, run.mark = (lambda s: s in done), done.add
+        saved = (engine.config, engine.run_cmd, engine.gitops.git, engine.stores.bootstrap, engine.stores.lm, engine.stores.bind,
+                 engine._session, engine.quiz_answers, engine.grade)
+        engine.config = lambda: {'python': 'p', 'lm_cli': str(app / 'living_memory.py')}
+        engine.run_cmd = lambda args, **kw: calls.append(kw.get('env')) or type('R', (), {'stdout': '', 'stderr': '', 'returncode': 0})()
+        engine.gitops.git = lambda *a, **k: None
+        engine.stores.bootstrap = lambda *a, **k: None
+        engine.stores.lm = lambda *a, **k: {}
+        engine.stores.bind = lambda *a, **k: None
+        engine._session = lambda *a, **k: {}
+        engine.quiz_answers = lambda *a, **k: {}
+        engine.grade = lambda *a, **k: None
+        deny_saved, engine.sessions.deny_rules = engine.sessions.deny_rules, (lambda *a: [])
+        self.addCleanup(lambda: setattr(engine.sessions, 'deny_rules', deny_saved))
+        (tmp / 'kb' / 'repo').mkdir(parents=True)
+        self.addCleanup(lambda: (engine.__dict__.update(config=saved[0], run_cmd=saved[1], _session=saved[6], quiz_answers=saved[7], grade=saved[8]),
+                                 setattr(engine.gitops, 'git', saved[2]), setattr(engine.stores, 'bootstrap', saved[3]),
+                                 setattr(engine.stores, 'lm', saved[4]), setattr(engine.stores, 'bind', saved[5]), clock._current.update(at=None)))
+        engine.kb_quiz(run, 1.0)
+        self.assertIn('LIVING_MEMORY_CLOCK_OFFSET_SECONDS', calls[0])
+
+
+class CommandErrors(unittest.TestCase):
+    def test_exit_code_and_legacy_exit_both_count(self):
+        store = Path(tempfile.mkdtemp())
+        jsonl(store / 'logs' / 'l.jsonl', [{'kind': 'command', 'event': 'capture', 'exit_code': 0},
+                                           {'kind': 'command', 'event': 'read', 'exit_code': 2, 'reason': 'x'},
+                                           {'kind': 'command', 'event': 'read', 'exit': 1}, {'kind': 'command', 'event': 'read'}])
+        m = analyze.store_metrics(store, {})
+        self.assertEqual((m['commands']['total'], m['commands']['errors']), (4, 2))
 
 
 def load(path, name):

@@ -9,6 +9,8 @@ the text from before that housekeeping is included."""
 import json
 from pathlib import Path
 
+from .common import lm_call
+
 
 def events(path):
     try:
@@ -44,7 +46,7 @@ def _items(evs):
             if c.get('type') == 'text' and (c.get('text') or '').strip():
                 items.append(('text', c['text']))
             elif c.get('type') == 'tool_use':
-                items.append(('tool', 'living_memory' in json.dumps(c.get('input', {}))))
+                items.append(('tool', bool(lm_call((c.get('input') or {}).get('command')))))
     return items
 
 

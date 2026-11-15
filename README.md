@@ -9,6 +9,7 @@ Run folders are never deleted, so every run stays available for comparison (for 
 - `simkit/`: the generic engine. Nothing in it is specific to a scenario.
   - `engine.py`: init, sprints (waves, merges, CI), handovers, quiz, grading, smoke test, isolation.
   - `sessions.py`: the `claude -p` launcher: per-agent `LIVING_MEMORY_ROOT`, budget, timeout, deny rules, stream-json transcript.
+  - `clock.py`: the simulated calendar (`init --clock`, see below).
   - `stores.py`: store bootstrap (bind, then migration plan and apply, then taxonomy plan and apply, then sandbox marker) and export/import handover. It never calls `setup`, so the real `config.json` is never touched.
   - `gitops.py`: bare origin, one persistent clone per agent, an integration clone that merges and runs CI.
   - `analyze.py`: `metrics.json` (fixed schema), the summary, and `compare`.
@@ -22,20 +23,20 @@ Run folders are never deleted, so every run stays available for comparison (for 
   - `briefings/_team.md` (with `{name} {title} {team_size} {roster}` placeholders) and one role file per agent. Briefings never mention memory; agents get the LM protocol only from the global CLAUDE.md and the hooks, the same as a real user.
   - `seed/` (copied into the repo) and `oracle/` (hidden material, such as a reference model). Agents are denied access to the scenario, the harness, other agents' clones and stores, and the real store.
 - `runs/<scenario>-<timestamp>[-label]/` (gitignored, kept forever):
-  - `manifest.json`: scenario hash, LM app tree hash, Claude Code version, harness hash.
+  - `manifest.json`: scenario hash, LM app tree hash, LM source commit (`living_memory.repo_commit`, from `lm_repo`), the CLI's `version --json` output (`living_memory.cli_version`; both null when they cannot be read), Claude Code version, harness hash, options and the `clock` record.
   - `scenario/`: a frozen copy of the scenario the run used.
   - `origin.git`, `integration/` and `ws/<agent>/`: the repos.
   - `stores/<agent>/`: the memory stores. `stores/_grader` is unbound, and grading runs with hooks disabled.
   - `transcripts/<key>.jsonl`: each session's prompt, stream-json output and stderr.
   - `state.json` (resumable steps and sessions), `costs.jsonl`, `ci.jsonl`, `merges.jsonl`, `branches.jsonl`, `handovers.jsonl`.
-  - `quiz/answers`, `quiz/grades`, `metrics.json`, `sim.log`.
+  - `quiz/answers`, `quiz/grades`, `stores-readout.json`, `review-at-quiz.json`, `metrics.json`, `sim.log`.
 
 ## Running
 ```
 python sim.py smoke bank-cobol-springboot          # ~$0.10, checks hooks, isolation, deny rules, effort flag
 python sim.py init  bank-cobol-springboot          # new run, primes Maven, CI on the seed
 python sim.py run   [--through N]                  # sprints; resumable, stops at the spend limit
-python sim.py quiz && python sim.py grade && python sim.py analyze
+python sim.py quiz && python sim.py grade && python sim.py readout && python sim.py analyze
 python sim.py verify-isolation                     # no run session in the real store or in another agent's store
 python sim.py compare RUN_A RUN_B
 ```
@@ -75,11 +76,35 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 - A session ends 30 s after its final `result` event; background commands an agent left running are killed (`ended_after_result` in the session row).
 - Replies are read with `simkit/replies.py`: the first result, plus the text written before any trailing Living Memory housekeeping.
 - Agent sessions get `LIVING_MEMORY_HEADLESS=1`.
+- A memory call is recognised by `common.lm_call(command)`, which returns the subcommand (`other` for an unknown one) or None. It accepts `python .../living_memory.py ...` and the `alm` / `alm.exe` launcher, with an optional leading `&`, quoted paths and the global options `--json`, `--domain`, `--root`, `--cwd` and `--actor` before the subcommand. It follows variables, shell functions and `eval` the command defines itself (`PY=...; LM=...; "$PY" "$LM" capture`). Only the first word of a command or chain stage counts, so `realm`, `palm` and an `alm` inside a path do not match. Run counts of memory calls made with the older substring test can differ slightly on re-analysis (for example `cat living_memory.py` is no longer a call).
 - Probe grades are keyed by the evidence graded; an earlier verdict on identical evidence is reused.
 - `metrics.json` `quiz_repo_reads` lists memory-quiz commands that named a repo path or `~/.claude/projects` (it should be empty); `quiz_other_shell` lists every non-Living-Memory shell command in the memory quiz.
 - Quiz scores count every taker x question: an unanswered or ungraded question scores 0 as `missing`. A probe whose session never ran scores 0 (`missing`); an unparsed judge reply leaves the probe unscored (`judge_error`) for a re-grade.
 - Probe evidence holds only tracker and wiki files the session's own tools named or created, and after a merge conflict the diff starts at the main the agent merged in. Source files come before documents, each capped at 4,000 characters.
 - A session that ends without a result event (timeout) has no known cost; `spent()` and the spend limit count its budget cap (`cost_bound_usd`).
+
+## Simulated calendar (`--clock`)
+`init --clock` (also on `pipeline`) gives the run a calendar, so Living Memory's time-based features (review dates, staleness, the headless auto-resolve of finished plan, bug and risk notes after 3 simulated days) are exercised. It is off by default, so earlier scenarios and reruns stay reproducible. The choice is stored in the manifest (`options.clock` and `clock: {enabled, days_per_sprint, start}`); resumed runs read it from there.
+- `clock_days_per_sprint` in `simkit/config.json` (default 14; `SIMKIT_CLOCK_DAYS_PER_SPRINT` overrides it) is the length of a sprint in simulated days. The simulated start is the run's creation time.
+- Sprint `s`, working day `d` (1-based) is `start + (s-1) * D + (d-1) * floor(D / W)` days, with D = `clock_days_per_sprint` and W = the scenario's working days per sprint. With D = 14 and W = 3, days start 4 days apart.
+- The end-of-sprint review runs on `start + s * days_per_sprint - 1` days, the last day before the next sprint starts.
+- The quizzes, probe and grader sessions and the knowledge-base quiz (including its digest step) run on `start + (sprints + 1) * days_per_sprint` days: one sprint length after the last sprint ended. The readout runs one day later, because the quiz sessions' own clocks keep running in real time from that start.
+- Agent sessions get `LIVING_MEMORY_CLOCK_OFFSET_SECONDS` (simulated session start minus real time at launch; Living Memory honours it only with `LIVING_MEMORY_HEADLESS=1`, which every session has) and `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` (ISO 8601 with offset), so the agent's own commits carry simulated dates. Harness Living Memory calls (`stores.lm`, which then also sets `LIVING_MEMORY_HEADLESS=1`) and harness git operations (auto-commits, merges) use the time of the phase being run. The session row records `sim_time`, and `workspace/.clock.json` records `time`.
+- Sessions of one wave start at the same simulated time. Real time keeps running inside a session, so a long session ends a few simulated minutes after it started.
+
+## End-of-run readout (`readout`, schema 4)
+`sim.py readout [--run RUN]` runs in `pipeline` after the quizzes, grading and probes, before `analyze`. For each agent store of a run with Living Memory on it runs read-only commands with `LIVING_MEMORY_ROOT` set to that store and the scenario's domain, and writes `stores-readout.json`: `stats --days 120 --json`, `log --limit 100000 --json`, `recap --days <min(90, run length)> --json` and `maintenance history --limit 1000 --json`. A window the installed CLI caps (`stats` allows 30 days and `recap` 90) is retried at the cap and recorded under `days_used`. A command that fails is recorded under that store's `errors` and the others still run. Recap's `markdown` copy is dropped. The step is `readout`, so a resumed run does not repeat it. Before the first quiz the harness also writes `review-at-quiz.json`, the review worklist of every store at that moment (read-only); the readout folds it in as `review_at_quiz`.
+
+`metrics.json` `readout` (schema 4; None or empty when the run has no `stores-readout.json`, and the log-based fields are 0 for runs that logged no debug detail):
+- `capture_coverage`: per store `{days, mutating, covered, ratio}` and `mean_ratio` over the stores that have a ratio. A run with `--clock` takes a `stats` snapshot per store at the end of each sprint (inside the review step, appended to `stats.jsonl`; the window is `clock_days_per_sprint - 1` days, at most 30, which starts on the sprint's first day and does not overlap the previous snapshot), because the CLI's stats window is 30 days and such a run spans about 70. The per-sprint mutating and covered counts are summed (`source: sprints`). Without snapshots (no clock, or older runs) the end-of-run `stats` is used.
+- `reminders_by_kind`: the Stop reminders by kind (`fix`, `decision`, ...) from the same stats, summed over the stores and sprints.
+- `recap_days_needed`, `recap_truncated`: the readout's `recap` window is `min(90, simulated run length)` days; `recap_truncated` is true when the run is longer than 90 days.
+- `fix_reminder_followthrough`: sessions with a Stop hook row `reason: reminded:fix` in a store's logs, how many had a successful `capture` command in the same session after it, and the rate.
+- `actors`: the `log` rows by actor (maintenance, auto_resolve, plan, undo, obsidian, `agent:<harness>`, command).
+- `auto_resolved`: `log` rows with actor `auto_resolve` and event `resolved`.
+- `due_at_quiz`: the review worklist size per store (`due`) and in total at the first quiz.
+- `call_operator_denies`: pre-tool-use hook rows with decision `deny:call-operator` (a leading `&` in a Bash command).
+`compare-arms` lists these next to the other metrics.
 
 ## Review metrics (schema 3)
 Schema 3 adds `status_snapshots` (active notes of type `status`, per store and in `totals`) and, for runs with Living Memory on, an end-of-sprint review:
@@ -124,7 +149,7 @@ To add a run: `sim.py analyze --run RUN`, write `docs/notes/runs/RUN.md`, run `s
 Copy `scenarios/bank-cobol-springboot`, then change the roster, waves, seed, CI command, events, ground truth and quiz. Keep every scripted fact traceable: each memo has an `event` id that matches a `ground_truth.facts` key, and each quiz question names its fact.
 
 ## Known limits
-- All sessions run on the same real day, so LM's time-based features (review_by dates, staleness) are not exercised.
+- Without `--clock` all sessions run on the same real day, so LM's time-based features (review_by dates, staleness, auto-resolve) are not exercised. With it, they are exercised on a simulated calendar, but notes' ages come from the offset, not from real waiting (see above).
 - Governed LM operations (plans and apply) can't be approved in headless mode. Watch for agents trying them.
 - Fact detection in stores is regex-based. The quiz grades and a qualitative review are the authoritative signals.
 - Possible future addition: a per-run `CLAUDE_CONFIG_DIR`, to test an LM development build instead of the installed app (the hooks currently come from the user-level `~/.claude/settings.json`).

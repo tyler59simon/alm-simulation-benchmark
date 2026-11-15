@@ -2,13 +2,14 @@
 import json
 from pathlib import Path
 
+from . import clock
 from .common import clean_env, config, run_cmd, write_json
 
 
 def lm(store, args, payload=None, actor=None, cwd=None):
     """Run the installed Living Memory CLI against one store; returns parsed JSON (or raw text)."""
     cfg = config()
-    extra = {'LIVING_MEMORY_ROOT': str(store)}
+    extra = {**clock.lm_env(), 'LIVING_MEMORY_ROOT': str(store)}   # the simulated time of the phase, when the run has a clock
     if actor:
         extra['LIVING_MEMORY_ACTOR'] = actor
     r = run_cmd([cfg['python'], cfg['lm_cli']] + list(args), cwd=cwd or store, env=clean_env(extra),

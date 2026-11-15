@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -68,7 +69,8 @@ def config():
     """Machine configuration: simkit/config.json, overridable per key by SIMKIT_<KEY> environment variables."""
     cfg = read_json(HOME / 'simkit' / 'config.json', {})
     for key in list(cfg):
-        cfg[key] = os.path.expandvars(os.environ.get('SIMKIT_' + key.upper(), cfg[key]))
+        value = os.environ.get('SIMKIT_' + key.upper(), cfg[key])
+        cfg[key] = os.path.expandvars(value) if isinstance(value, str) else value
     real = read_json(Path.home() / '.config' / 'agentic-living-memory' / 'config.json', {}) or {}
     cfg.setdefault('real_store', real.get('data_root', ''))
     cfg['claude'] = shutil.which(cfg.get('claude', 'claude')) or cfg.get('claude', 'claude')
@@ -110,6 +112,139 @@ def clean_env(extra=None, path_prepend=()):
     return env
 
 
+# Subcommands of the Living Memory CLI that the harness tells apart in transcripts and logs.
+LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'supersede', 'confirm', 'check', 'resolve',
+                  'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'learn', 'timeline',
+                  'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan',
+                  'recap', 'ask', 'maintenance', 'changes', 'source-plan', 'source-sync', 'semantic', 'off', 'on',
+                  'status', 'restore', 'log')
+_LM_OPTIONS_WITH_VALUE = ('--domain', '--root', '--cwd', '--actor')
+_PYTHON = re.compile(r'^(python(\d(\.\d+)?)?|pythonw|py)(\.exe)?$')
+
+
+def _words(text):
+    """Split shell text at unquoted ; | && || and newlines into segments of words (quotes removed; a backslash is
+    literal, so Windows paths survive, except \\" inside double quotes). A PowerShell call operator & before a word
+    is dropped."""
+    segments, words, word, quote, i = [], [], None, None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            elif quote == '"' and ch == '\\' and text[i + 1:i + 2] == '"':
+                word += '"'
+                i += 1
+            else:
+                word += ch
+        elif ch in '\'"':
+            quote, word = ch, word or ''
+        elif ch in ';|\n' or text.startswith('&&', i):
+            if word is not None:
+                words.append(word)
+            segments.append(words)
+            words, word = [], None
+            i += 1 if ch == '&' else 0   # && is two characters
+        elif ch == '&' and word is None and not words:
+            pass   # the call operator: & "path" args
+        elif ch.isspace():
+            if word is not None:
+                words.append(word)
+                word = None
+        else:
+            word = (word or '') + ch
+        i += 1
+    if word is not None:
+        words.append(word)
+    segments.append(words)
+    return [w for w in segments if w]
+
+
+def _base(word):
+    return word.replace('\\', '/').rsplit('/', 1)[-1].lower()
+
+
+_VARIABLE = re.compile(r'\$(?:env:)?\{?(\w+)\}?')
+
+
+def _expand(word, variables):
+    """Variables the command assigned earlier: a word that is only a variable ($X, ${X}, $env:X) becomes its value
+    (split into words only when the value is itself a command line, that is, it holds quotes; a path with spaces stays
+    one word), and a variable inside a longer word is replaced in place."""
+    whole = _VARIABLE.fullmatch(word)
+    if whole and whole[1].lower() in variables:
+        value = variables[whole[1].lower()]
+        return [w for seg in _words(value) for w in seg] if ' ' in value and re.search('[\'"]', value) else [value]
+    return [_VARIABLE.sub(lambda m: variables.get(m[1].lower(), m[0]), word)]
+
+
+def _subcommand(words):
+    """Subcommand of `[interpreter [flags] script | alm] [global options] SUBCOMMAND ...`, else None when the words do not
+    start a Living Memory call."""
+    i = 0
+    while i < len(words) and words[i] in ('&', 'eval', '{', 'do', 'then', 'else'):
+        i += 1
+    if i >= len(words):
+        return None
+    first = _base(words[i])
+    if first in ('alm', 'alm.exe'):
+        i += 1
+    elif _PYTHON.match(first):
+        i += 1
+        while i < len(words) and words[i].startswith('-'):
+            i += 2 if words[i] in ('-X', '-W') else 1   # interpreter flags: -I, -X utf8, -3.10
+        if i >= len(words) or _base(words[i]) != 'living_memory.py':
+            return None
+        i += 1
+    elif first == 'living_memory.py':
+        i += 1
+    else:
+        return None
+    while i < len(words):
+        w = words[i]
+        if w in _LM_OPTIONS_WITH_VALUE:
+            i += 2
+        elif w == '--json' or w.partition('=')[0] in _LM_OPTIONS_WITH_VALUE:
+            i += 1
+        else:
+            return w if w in LM_SUBCOMMANDS else 'other'
+    return 'other'
+
+
+def lm_call(command):
+    """The Living Memory subcommand a shell command runs, else None; 'other' for a Living Memory call without a known
+    subcommand. Recognises `[&] "<python>" [flags] "<...>/living_memory.py" ...` and the bare or pathed `alm` / `alm.exe`
+    launcher, in Bash or PowerShell, after optional global options (--json, --domain D, --root R, --cwd C, --actor A).
+    Only the first word of a command (or of one stage of a chain, or of a { } block) counts, so `realm`, `palm`, or an
+    `alm` inside a path or an argument never match. Variables and shell functions the command defines itself are
+    followed (PY="..."; LM="..."; "$PY" "$LM" capture; lm() { python ...; }; lm capture)."""
+    if not isinstance(command, str) or not command.strip():
+        return None
+    variables, functions = {}, {}
+    for words in _words(command):
+        if len(words) >= 3 and re.fullmatch(r'\$\w+', words[0]) and words[1] == '=':   # PowerShell: $py = "..."
+            words = [words[0] + '=' + words[2]] + words[3:]
+        if len(words) >= 2 and words[0].endswith('()') and words[1] == '{':   # Bash: lm() { python ... "$@"; }
+            functions[words[0][:-2]] = [w for w in words[2:] if w != '"$@"' and w != '$@']
+            continue
+        i = 0
+        while i < len(words) and re.match(r'^\$?[A-Za-z_][A-Za-z0-9_]*=', words[i]):   # VAR=value (Bash prefix or assignment)
+            name, _, value = words[i].partition('=')
+            variables[name.lstrip('$').lower()] = _VARIABLE.sub(lambda m: variables.get(m[1].lower(), m[0]), value)
+            i += 1
+        words = [x for w in words[i:] for x in _expand(w, variables)]
+        if words and words[0] in functions:
+            words = [x for w in functions[words[0]] for x in _expand(w, variables)] + words[1:]
+        if words and (words[0] == 'eval' or words[:2] == ['cmd', '/c']):   # eval "$CMD read x": the string is a command line
+            text = _VARIABLE.sub(lambda m: variables.get(m[1].lower(), m[0]), ' '.join(words[1 if words[0] == 'eval' else 2:]))
+            words = (_words(text) or [[]])[0]
+        for start in [0] + [j + 1 for j, w in enumerate(words) if w.endswith('{')]:   # also the body of foreach(...){ & $py ... }
+            found = _subcommand(words[start:])
+            if found:
+                return found
+    return None
+
+
 def run_cmd(args, cwd=None, env=None, timeout=None, input=None, check=False):
     r = subprocess.run(args, cwd=cwd, env=env, timeout=timeout, input=input, text=True, encoding='utf-8',
                        errors='replace', capture_output=True)
@@ -147,6 +282,7 @@ class Run:
         self.state_path = self.dir / 'state.json'
         self.workspace_enabled = bool(self.scenario.get('workspace'))
         self.days = int(self.scenario.get('days_per_sprint', 1))
+        self.clock = self.manifest.get('clock') or {'enabled': False}   # simulated calendar, see simkit/clock.py
 
     # ---- roster ----
     def agents(self):

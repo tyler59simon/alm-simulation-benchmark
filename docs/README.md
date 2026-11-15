@@ -47,7 +47,7 @@ To add a run to the log: finish it with `sim.py pipeline`, run `sim.py analyze -
 
 ## Living Memory changes
 
-- [Pull requests on the run timeline](living-memory-changes.md): 42 merges on main (12 not yet measured)
+- [Pull requests on the run timeline](living-memory-changes.md): 87 merges on main (57 not yet measured)
 
 
 _5 runs · 2 scenario versions · generated from runs/ by sim.py docs_

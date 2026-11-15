@@ -2,7 +2,7 @@
 
 _agentic-living-memory main_
 
-42 merges on main; 12 not yet measured by any run.
+87 merges on main; 57 not yet measured by any run.
 
 ## Reading
 
@@ -46,6 +46,51 @@ Each run with the Living Memory pull requests merged on main since the previous 
 - #41 Section-level memory units, optional sqlite-vec search and a token-aware injection controller (2026-11-13)
 - #42 Capture reliability: signal priority, covering-note settlement, ingest selection, protocol wording (2026-11-13)
 - #43 Fix blocked ingest captures being recorded as skips; auto-allow single-quoted CLI paths (2026-11-13)
+- #44 Docs: rename lm-team-sim to alm-simulation-benchmark (2026-11-13)
+- #45 Note currency: every note stays current, with a review worklist, an activity log and a user brief (2026-11-13)
+- #46 Ingest prompt and pull guard for decision-document reminders (2026-11-13)
+- #47 Refuse positional values in capture --title (extra --detail values replaced titles) (2026-11-13)
+- #48 Note views: synced HTML dashboards for picked notes (2026-11-13)
+- #49 Fix worklist and Bash hints, list all thirteen note types (2026-11-14)
+- #50 Keep note freshness honest: verification baseline, source states, currency cache (2026-11-14)
+- #51 Put child domains in scope, auto-resolve finished work, add unbind (2026-11-14)
+- #52 remap keeps the verification baseline of a moved note (2026-11-14)
+- recover refuses final-state reversals; marker before journal; report roll-forward results (2026-11-14)
+- MAINT-1B: pinned notes, last_retirement record, restore and plan restore (2026-11-14)
+- Pins block auto-resolve; damaged pending journals warn; pin-only vault edits keep updated (2026-11-14)
+- MAINT-1C: maintenance configuration, accounting and run records (2026-11-14)
+- Maintenance accounting keeps its gates when the checkpoint is lost (2026-11-14)
+- Early retry after a config change needs the latest attempt to be the failure (2026-11-14)
+- Releasing an older reservation keeps the latest attempt's failure (2026-11-14)
+- release only frees reservations that never launched; recovery rolls forward first (2026-11-14)
+- MAINT-1D: maintenance candidates and evidence packet (2026-11-14)
+- MAINT-1D: tool-less Claude reviewer adapter (2026-11-14)
+- MAINT-1D: maintenance executor and run() (2026-11-14)
+- Maintenance executor rechecks successors and map currency; batches fit the report (2026-11-14)
+- MAINT-1E: maintenance command, SessionStart scheduling and summary line (2026-11-14)
+- Maintenance reports only a live provider block; decisions keep their reason (2026-11-14)
+- MAINT-1E: persist maintenance state through backup, restore, relocation and Obsidian (2026-11-14)
+- MAINT-1E: document automatic note maintenance and the archive exception (2026-11-14)
+- Restore and relocation always leave maintenance disabled; damaged files do not block recovery (2026-11-14)
+- inspect-plan shows a damaged file that a restore plan repairs (2026-11-14)
+- MAINT-1F: dry-run gate script; a miscopied revision defers one note (2026-11-14)
+- Maintenance report validation is idempotent; the gate scores patches (2026-11-14)
+- Gate scores patches with the executor's rules; copy accepts _global (2026-11-14)
+- Maintenance reviewer names candidates by one packet key (2026-11-14)
+- FEAT-6: one-line summaries and actors in note history (2026-11-14)
+- FEAT-2: recap command and Obsidian Recap page (2026-11-14)
+- History and recap: fixes from the Codex review (2026-11-14)
+- Fix Codex review findings in the alm renderer and installer retries (2026-11-14)
+- Add the alm command: launcher, terminal text output, agent CMD (2026-11-14)
+- alm: help line for recap; print markdown results as written (2026-11-14)
+- #53 Support Python 3.10 to 3.15: parse Z timestamps everywhere, add manua… (2026-11-14)
+- Capture coverage, and summary and actor on bare history rows (UX-C5) (2026-11-14)
+- Stop: verified-fix reminder and plan approval as a decision (UX-C3, UX-C4) (2026-11-14)
+- Stop: no second decision after an approved plan; grep misses are not fixes (2026-11-14)
+- Stop: keep a plan approval next to a preference; count shell edits, not failed ones (2026-11-14)
+- Stop: a shell command counts as the edit only when it plainly writes (2026-11-14)
+- Stop: shell edits must also not be read-only; accept sed --in-place (2026-11-14)
+- #54 Add a per-session off switch: alm off, alm on, alm status, LIVING_MEMORY_OFF (2026-11-14)
 
 
-_42 merges · 5 runs_
+_87 merges · 5 runs_

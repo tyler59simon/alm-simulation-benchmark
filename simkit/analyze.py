@@ -8,12 +8,9 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .common import clean_env, config, read_json, read_jsonl, write_json
+from .common import LM_SUBCOMMANDS, clean_env, config, lm_call, read_json, read_jsonl, write_json
 
-SCHEMA = 3
-LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'supersede', 'confirm', 'check', 'resolve',
-                  'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'learn', 'timeline',
-                  'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan')
+SCHEMA = 4
 NOISE = [r'\b[0-9a-f]{7,40}\b(?=.*commit)|commit [0-9a-f]{7,}', r'(?i)\bsprint \d+ (status|progress|summary)\b',
          r'(?i)\b(tests? (pass|passing)|\d+ tests)\b', r'(?i)\bstandup\b']
 
@@ -63,6 +60,11 @@ def pct(values, q):
     return round(values[min(len(values) - 1, int(q * len(values)))], 1)
 
 
+def exit_code(row):
+    """Exit code of a command log row: Living Memory writes `exit_code` (older notes of the format used `exit`)."""
+    return row.get('exit_code', row.get('exit'))
+
+
 def store_metrics(store, truth):
     notes = store_notes(store)
     active = [n for n in notes if is_active(n)]
@@ -95,9 +97,10 @@ def store_metrics(store, truth):
     m['hooks'] = {'events': dict(Counter(r.get('event') for r in hooks)), 'outcomes': dict(outcomes),
                   'context_chars': {e: {'n': len(v), 'mean': round(statistics.mean(v)), 'max': max(v)} for e, v in ctx.items()},
                   'ms_p50': pct([r['ms'] for r in hooks if 'ms' in r], .5), 'ms_p95': pct([r['ms'] for r in hooks if 'ms' in r], .95)}
-    m['commands'] = {'total': len(cmds), 'errors': sum(1 for r in cmds if r.get('exit') not in (0, None)),
+    failed = [r for r in cmds if exit_code(r) not in (0, None)]
+    m['commands'] = {'total': len(cmds), 'errors': len(failed),
                      'by_event': dict(Counter(r.get('event') for r in cmds)),
-                     'error_reasons': dict(Counter(str(r.get('reason') or r.get('error') or '')[:80] for r in cmds if r.get('exit') not in (0, None)))}
+                     'error_reasons': dict(Counter(str(r.get('reason') or r.get('error') or '')[:80] for r in failed))}
     usage = [r for p in Path(store, '.turns').glob('usage-*.jsonl') for r in read_jsonl(p)]
     m['usage'] = dict(Counter(r.get('e') for r in usage))
     m['injected_distinct'] = len({r.get('ref') for r in usage if r.get('e') == 'inject'})
@@ -157,10 +160,8 @@ def transcript_metrics(path, run_dir, agent):
             if c.get('type') == 'tool_use':
                 tools[c.get('name')] += 1
                 s = json.dumps(c.get('input', {}))
-                if 'living_memory' in s:
-                    cmd = c.get('input', {}).get('command', '')
-                    after = cmd.split('living_memory.py', 1)[-1]
-                    sub = next((w for w in re.findall(r'[a-z][a-z-]+', after) if w in LM_SUBCOMMANDS), 'other')
+                sub = lm_call((c.get('input') or {}).get('command'))
+                if sub:
                     lm_sub[sub] += 1
                     pending[c.get('id')] = sub
                 low = s.replace('\\\\', '/').replace('\\', '/').lower()
@@ -328,7 +329,7 @@ def quiz_other_shell(run):
     found = {}
     for t in sorted((run.transcripts / 'quiz').glob('*.jsonl')):
         for tool, cmd in _shell_calls(t):
-            if tool in ('Bash', 'PowerShell') and 'living_memory' not in cmd:
+            if tool in ('Bash', 'PowerShell') and not lm_call(cmd):
                 found.setdefault(t.stem, []).append(cmd[:200])
     return found
 
@@ -554,7 +555,7 @@ def _tool_errors(path):
             if not isinstance(c, dict):
                 continue
             if c.get('type') == 'tool_use':
-                names[c.get('id')] = str(c.get('name')) + (':lm' if 'living_memory' in json.dumps(c.get('input', {})) else '')
+                names[c.get('id')] = str(c.get('name')) + (':lm' if lm_call((c.get('input') or {}).get('command')) else '')
             elif c.get('type') == 'tool_result' and c.get('is_error'):
                 t = c.get('content')
                 if isinstance(t, list):
@@ -859,6 +860,82 @@ def review_metrics(run):
             'review_rows': per_sprint, 'plans_applied': applied}
 
 
+# ---------- store readout (schema 4) ----------
+def _store_logs(store):
+    return [r for p in sorted(Path(store, 'logs').glob('*.jsonl')) for r in read_jsonl(p)]
+
+
+def fix_followthrough(run):
+    """Sessions that got a Stop reminder of kind `fix` (hook row, detail.reason `reminded:fix`; needs debug logging) and
+    whether a successful `capture` command in the same session came after it. From the stores' logs."""
+    reminded = followed = 0
+    for store in sorted(run.stores.glob('*')):
+        if store.name.startswith('_'):
+            continue
+        logs = _store_logs(store)
+        first = {}
+        for r in logs:
+            if r.get('kind') == 'hook' and r.get('event') == 'stop' and (r.get('detail') or {}).get('reason') == 'reminded:fix':
+                first.setdefault(r.get('session'), r.get('ts') or '')
+        captures = defaultdict(list)
+        for r in logs:
+            if r.get('kind') == 'command' and r.get('event') == 'capture' and r.get('exit_code') in (0, None):
+                captures[r.get('session')].append(r.get('ts') or '')
+        reminded += len(first)
+        followed += sum(1 for s, ts in first.items() if any(c > ts for c in captures.get(s, [])))
+    return {'reminded_sessions': reminded, 'followed': followed, 'rate': round(followed / reminded, 3) if reminded else None}
+
+
+def call_operator_denies(run):
+    """Pre-tool-use hook rows whose decision is `deny:call-operator` (a leading & in a Bash command)."""
+    return sum(1 for store in run.stores.glob('*') if not store.name.startswith('_')
+               for r in _store_logs(store) if r.get('kind') == 'hook' and (r.get('detail') or {}).get('decision') == 'deny:call-operator')
+
+
+def readout_metrics(run):
+    """Schema 4 metrics from stores-readout.json (engine.readout) and the stores' logs. Everything is None or empty when
+    the run has no readout (older runs, arms without Living Memory)."""
+    out = {'capture_coverage': None, 'reminders_by_kind': {}, 'actors': {}, 'auto_resolved': None, 'due_at_quiz': None,
+           'fix_reminder_followthrough': fix_followthrough(run), 'call_operator_denies': call_operator_denies(run)}
+    readout = read_json(run.dir / 'stores-readout.json') or {}
+    stores_ = readout.get('stores')
+    if not stores_:
+        return out
+    latest = {}   # per-sprint stats snapshots (runs with a simulated calendar): the last good one per store and sprint
+    for r in read_jsonl(run.dir / 'stats.jsonl'):
+        if isinstance(r.get('stats'), dict):
+            latest[(r.get('agent'), r.get('sprint'))] = r['stats']
+    sprint_rows = defaultdict(list)
+    for (agent, _), snap in latest.items():
+        sprint_rows[agent].append(snap)
+    out['recap_days_needed'], out['recap_truncated'] = readout.get('recap_days_needed'), readout.get('recap_truncated')
+    cov, reminders, actors, auto, due = {}, Counter(), Counter(), 0, {}
+    for aid, s in stores_.items():
+        if sprint_rows.get(aid):   # sum the per-sprint windows; the end-of-run stats only sees the last 30 days
+            snaps = sprint_rows[aid]
+            mut = sum(((x.get('capture_coverage') or {}).get('mutating') or 0) for x in snaps)
+            cvd = sum(((x.get('capture_coverage') or {}).get('covered') or 0) for x in snaps)
+            cov[aid] = {'days': sum((x.get('capture_coverage') or {}).get('days') or 0 for x in snaps), 'mutating': mut, 'covered': cvd,
+                        'ratio': round(cvd / mut, 2) if mut else None, 'source': 'sprints'}
+            for x in snaps:
+                reminders.update({k: v for k, v in (x.get('reminders') or {}).items() if isinstance(v, (int, float))})
+        else:
+            c = ((s.get('stats') or {}).get('capture_coverage')) or {}
+            cov[aid] = {k: c.get(k) for k in ('days', 'mutating', 'covered', 'ratio')} if c else None
+            reminders.update({k: v for k, v in ((s.get('stats') or {}).get('reminders') or {}).items() if isinstance(v, (int, float))})
+        rows = ((s.get('log') or {}).get('rows')) or []
+        actors.update(str(r.get('actor') or '?') for r in rows)
+        auto += sum(1 for r in rows if r.get('actor') == 'auto_resolve' and r.get('event') == 'resolved')
+        rq = s.get('review_at_quiz')
+        if rq and 'error' not in rq:
+            due[aid] = rq.get('total') if rq.get('total') is not None else len(rq.get('items') or [])
+    ratios = [c['ratio'] for c in cov.values() if c and isinstance(c.get('ratio'), (int, float))]
+    out.update(capture_coverage={'per_store': cov, 'mean_ratio': round(statistics.mean(ratios), 3) if ratios else None},
+               reminders_by_kind=dict(reminders), actors=dict(actors), auto_resolved=auto,
+               due_at_quiz={'per_store': due, 'total': sum(due.values())} if due else None)
+    return out
+
+
 # ---------- run ----------
 def analyze(run):
     state = run.state()
@@ -926,6 +1003,7 @@ def analyze(run):
     review = review_metrics(run)
     if review is not None:
         metrics['review'] = review
+    metrics['readout'] = readout_metrics(run)
     write_json(run.dir / 'metrics.json', metrics)
     return metrics
 
@@ -946,6 +1024,11 @@ def summary(m):
     if rv:
         lines.append(f"review: worklist precision {rv['worklist_precision']} ({rv['judged']} judged, {rv['unjudged']} unjudged), "
                      f"{rv['plans_applied']} plans applied")
+    ro = m.get('readout') or {}
+    if ro.get('capture_coverage'):
+        lines.append(f"readout: capture coverage {ro['capture_coverage']['mean_ratio']}, reminders {ro['reminders_by_kind']}, "
+                     f"fix follow-through {ro['fix_reminder_followthrough']['rate']}, auto-resolved {ro['auto_resolved']}, "
+                     f"worklist at quiz {(ro['due_at_quiz'] or {}).get('total')}, call-operator denies {ro['call_operator_denies']}")
     if q:
         lines.append(f"quiz (memory only): all {q['score_all']}, should-know {q['score_should_know']}, failures {q['failure_kinds_should_know']}")
     if qr:
@@ -1065,6 +1148,12 @@ ARM_METRICS = (
     ('status snapshot notes', lambda m: (m.get('totals') or {}).get('status_snapshots')),
     ('review worklist precision', lambda m: (m.get('review') or {}).get('worklist_precision')),
     ('review plans applied', lambda m: (m.get('review') or {}).get('plans_applied')),
+    ('capture coverage (mean ratio)', lambda m: ((m.get('readout') or {}).get('capture_coverage') or {}).get('mean_ratio')),
+    ('reminders (all kinds)', lambda m: sum(((m.get('readout') or {}).get('reminders_by_kind') or {}).values()) if (m.get('readout') or {}).get('capture_coverage') else None),
+    ('fix reminder follow-through', lambda m: ((m.get('readout') or {}).get('fix_reminder_followthrough') or {}).get('rate')),
+    ('auto-resolved notes', lambda m: (m.get('readout') or {}).get('auto_resolved')),
+    ('review worklist at quiz', lambda m: ((m.get('readout') or {}).get('due_at_quiz') or {}).get('total')),
+    ('call-operator denies', lambda m: (m.get('readout') or {}).get('call_operator_denies')),
 )
 
 

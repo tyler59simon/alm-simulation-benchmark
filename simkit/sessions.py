@@ -4,7 +4,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from .common import append_jsonl, clean_env, config, kill_tree, now, rule_path, session_hash
+from . import clock
+from .common import append_jsonl, clean_env, config, kill_tree, lm_call, now, rule_path, session_hash
 
 
 def deny_rules(run, agent_id):
@@ -71,7 +72,7 @@ def parse_transcript(path):
             for c in msg.get('content') or []:
                 if c.get('type') == 'tool_use':
                     info['tool_calls'] += 1
-                    if 'living_memory' in json.dumps(c.get('input', {})):
+                    if lm_call((c.get('input') or {}).get('command')):
                         info['lm_calls'] += 1
         elif ev.get('type') == 'result':
             info['result'] = ev
@@ -118,8 +119,11 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
     tc_env, tc_path = run.toolchain_env()
     sim_env = ({'SIM_RUN': str(run.dir), 'SIM_AGENT': agent['id'], 'SIM_AGENT_NAME': agent.get('name', agent['id']),
                 'SIM_WORKSPACE': str(run.workspace)} if run.workspace_enabled else {})
+    sim_time = clock.session_time(run, key)   # None unless the run has a simulated calendar
+    # clean_env strips inherited CLAUDE* and LIVING_MEMORY* variables; the clock variables are passed in, so they survive it.
     env = clean_env({**tc_env, 'LIVING_MEMORY_ROOT': str(store), 'LIVING_MEMORY_LOG_LEVEL': 'debug',
-                     'LIVING_MEMORY_LOG_CONTENT': '1', 'LIVING_MEMORY_HEADLESS': '1', **sim_env, **(extra_env or {})}, tc_path)
+                     'LIVING_MEMORY_LOG_CONTENT': '1', 'LIVING_MEMORY_HEADLESS': '1', **sim_env,
+                     **clock.session_env(sim_time), **(extra_env or {})}, tc_path)
     env.update(mem_env)   # after clean_env, which strips CLAUDE* variables
     rev = lambda: run_rev(cwd)   # noqa: E731  the agent's HEAD before and after, so probes can grade what this session committed
     rev_before = rev()
@@ -175,6 +179,8 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
            'session_id': sid, 'session_hash': session_hash(sid) if sid else None,
            'tool_calls': info['tool_calls'], 'lm_calls': info['lm_calls'], 'final': (res.get('result') or '')[-1500:],
            'rev_before': rev_before, 'rev_after': rev(), 'memory': memory}
+    if sim_time:
+        row['sim_time'] = sim_time.isoformat(timespec='seconds')
     if row['cost_usd'] is None:
         # No result event (timeout, crash): the real cost is unknown, so the spend limit counts the session's budget cap.
         row['cost_bound_usd'] = float(tier.get('budget_usd', 1.0))

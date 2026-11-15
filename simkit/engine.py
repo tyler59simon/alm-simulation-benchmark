@@ -3,12 +3,13 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from . import gitops, sessions, stores
-from .common import (HOME, RUNS, SCENARIOS, Run, append_jsonl, config, log, now, read_json, read_jsonl, run_cmd,
+from . import clock, gitops, sessions, stores
+from .common import (HOME, RUNS, SCENARIOS, Run, append_jsonl, clean_env, config, log, now, read_json, read_jsonl, run_cmd,
                      tree_hash, write_json)
 
 
@@ -24,13 +25,33 @@ def lm_version(cfg):
     for name in ('VERSION', 'version.txt', '.version.json', 'install.json'):
         if (app / name).exists():
             version = (app / name).read_text(encoding='utf-8', errors='replace')[:200].strip()
-    return {'app': str(app), 'tree_sha256': tree_hash(parts)[:16], 'version': version}
+    return {'app': str(app), 'tree_sha256': tree_hash(parts)[:16], 'version': version,
+            'repo_commit': lm_repo_commit(cfg), 'cli_version': lm_cli_version(cfg)}
 
 
-def init(scenario, label=None, prime=True, memory='on', semantic=False, review_user=False):
+def lm_repo_commit(cfg):
+    """HEAD of the Living Memory source repository (config lm_repo); None when it cannot be read."""
+    try:
+        r = run_cmd(['git', '-C', str(cfg['lm_repo']), 'rev-parse', 'HEAD'], env=clean_env(), timeout=30)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    except (KeyError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def lm_cli_version(cfg):
+    """Parsed `version --json` of the CLI the harness runs (the same python and script as stores.lm); None on any failure."""
+    try:
+        r = run_cmd([cfg['python'], cfg['lm_cli'], 'version', '--json'], env=clean_env(), timeout=60)
+        return json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+    except (KeyError, OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+def init(scenario, label=None, prime=True, memory='on', semantic=False, review_user=False, use_clock=False):
     """memory='off' runs every agent with hooks disabled (the control arm); semantic=True installs the embedding model
     into each store from the machine's model folder (config semantic_model_dir), offline and hash-verified.
-    review_user=True lets the end-of-sprint review archive the notes its worklist proposes to archive."""
+    review_user=True lets the end-of-sprint review archive the notes its worklist proposes to archive.
+    use_clock=True gives the run a simulated calendar (simkit/clock.py) that starts at the run's creation time."""
     src = SCENARIOS / scenario
     if not (src / 'scenario.json').exists():
         raise SystemExit(f'No scenario {scenario}')
@@ -44,10 +65,12 @@ def init(scenario, label=None, prime=True, memory='on', semantic=False, review_u
     path.mkdir(parents=True)
     shutil.copytree(src, path / 'scenario')
     claude_v = run_cmd([cfg['claude'], '--version']).stdout.strip()
+    created = now()
     write_json(path / 'manifest.json', {
-        'scenario': scenario, 'label': label, 'created': now(), 'scenario_sha256': tree_hash([src])[:16],
+        'scenario': scenario, 'label': label, 'created': created, 'scenario_sha256': tree_hash([src])[:16],
         'living_memory': lm_version(cfg), 'claude_code': claude_v, 'harness_sha256': tree_hash([HOME / 'simkit'])[:16],
-        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic), 'review_user': bool(review_user)}, 'finished': None})
+        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic), 'review_user': bool(review_user), 'clock': bool(use_clock)},
+        'clock': clock.settings(use_clock, created, cfg), 'finished': None})
     run = Run(path)
     log(run, f'init {path.name}')
     if run.workspace_enabled:
@@ -128,7 +151,11 @@ def setup_workspace(run):
 
 
 def set_clock(run, sprint, day):
-    write_json(run.workspace / '.clock.json', {'sprint': sprint, 'day': day, 'label': day_label(run, sprint, day)})
+    row = {'sprint': sprint, 'day': day, 'label': day_label(run, sprint, day)}
+    when = clock.day_time(run, sprint, day)   # computed from the run, whether or not there is a workspace
+    if when:
+        row['time'] = when.isoformat(timespec='seconds')
+    write_json(run.workspace / '.clock.json', row)
 
 
 def day_label(run, sprint, day):
@@ -270,11 +297,37 @@ def sprint(run, n):
     if run.done(f's{n}'):
         log(run, f'sprint {n} already done')
         return
+    clock.enter(run, clock.day_time(run, n, 1))
     handovers(run, n)
     for d in range(1, run.days + 1):
         day(run, n, d)
     review(run, n)
     run.mark(f's{n}')
+
+
+def fetch_review(store, domain):
+    """The review worklist of one store, read-only: {counts, total, items}. The CLI returns the rows as `notes` and
+    their number as `due`."""
+    listed = stores.lm(store, ['--domain', domain, 'review', '--limit', '100'])
+    return {'counts': listed.get('counts') or {}, 'total': listed.get('due'), 'items': listed.get('notes') or []}
+
+
+def stats_window(run):
+    """Days of the per-sprint `stats` snapshot. The review runs at start + n*D - 1 days, so D - 1 days back starts exactly at
+    the sprint's first day and does not overlap the previous snapshot; the CLI keeps 30 days of diary at most."""
+    return max(1, min(30, int(run.clock['days_per_sprint']) - 1))
+
+
+def sprint_stats(run, n, aid, store, domain):
+    """One read-only `stats` snapshot of a store at the end of sprint n, appended to stats.jsonl (a failure is recorded). Only
+    runs with a simulated calendar take these: the CLI's stats window (30 days) is shorter than such a run."""
+    days = stats_window(run)
+    row = {'ts': now(), 'sprint': n, 'agent': aid, 'days': days}
+    try:
+        row['stats'] = stores.lm(store, ['--domain', domain, 'stats', '--days', str(days), '--json'])
+    except Exception as e:  # noqa: BLE001 a failed snapshot must not stop the sprint
+        row['error'] = str(e)[-300:]
+    append_jsonl(run.dir / 'stats.jsonl', row)
 
 
 def review(run, n):
@@ -284,15 +337,17 @@ def review(run, n):
     if run.options.get('memory') != 'on' or run.done(step):
         return
     domain = run.scenario['domain']
+    clock.enter(run, clock.review_time(run, n))
     for aid in run.agents():
         store = run.stores / aid
         if not store.is_dir():
             continue
         entry = {'ts': now(), 'sprint': n, 'agent': aid}
         try:
-            listed = stores.lm(store, ['--domain', domain, 'review', '--limit', '100'])
-            items = listed.get('notes') or []   # the CLI returns the worklist rows as `notes` and their number as `due`
-            entry.update(counts=listed.get('counts') or {}, total=listed.get('due'), items=items)
+            entry.update(fetch_review(store, domain))
+            items = entry['items']
+            if clock.enabled(run):
+                sprint_stats(run, n, aid, store, domain)
             if run.options.get('review_user'):
                 entry['applied'], entry['errors'] = [], []
                 for row in items:
@@ -318,6 +373,7 @@ def day(run, n, d):
     tag = day_label(run, n, d)
     if run.days > 1 and run.done(tag):
         return
+    clock.enter(run, clock.day_time(run, n, d))
     if run.workspace_enabled:
         set_clock(run, n, d)
     out = absent(run, n, d)
@@ -402,6 +458,22 @@ QUIZ_SHELL_DENY = [f'{shell}({c} *)' for shell in ('Bash', 'PowerShell') for c i
 # denied pipe stage denies the whole loop. analyze.quiz_repo_reads flags any memory-quiz command that names a repo path.
 
 
+def review_at_quiz(run):
+    """The review worklist of every agent store as it stands before the first quiz, written once to review-at-quiz.json
+    (read-only; a failing store records its error). The end-of-run readout folds it in as `review_at_quiz`."""
+    path = run.dir / 'review-at-quiz.json'
+    if path.exists() or run.options.get('memory') != 'on':
+        return
+    out = {}
+    for aid in run.agents():
+        if (run.stores / aid).is_dir():
+            try:
+                out[aid] = fetch_review(run.stores / aid, run.scenario['domain'])
+            except Exception as e:  # noqa: BLE001 a failed read must not stop the quiz
+                out[aid] = {'error': str(e)[-300:]}
+    write_json(path, {'ts': now(), 'stores': out})
+
+
 QUIZ_MODES = ('memory', 'repo')
 REPO_INTRO = ('Today is the LIGHTHOUSE knowledge review before go-live. Answer every question in one or two sentences, '
               'using anything you can find (the repository, the ticket board and whatever you already know). '
@@ -470,6 +542,8 @@ def quiz(run, mode='memory'):
         write_json(quiz_dir(run, mode) / 'answers' / f'{agent["id"]}.json', {'agent': agent['id'], **quiz_answers(run, key)})
 
     from .analyze import snapshot_stores
+    clock.enter(run, clock.final_time(run))
+    review_at_quiz(run)
     snapshot_stores(run)   # what memory held when the work ended, before any quiz can add to it
     takers = [a for a in run.scenario['roster'] if (run.stores / a['id']).exists()]
     with ThreadPoolExecutor(max_workers=run.scenario.get('parallel', 4)) as pool:
@@ -485,6 +559,7 @@ def kb_quiz(run, digests_budget=None):
     indexes the finished repo, the wiki and the tracker, then takes the memory-only quiz with only Living Memory
     (notes, `ask`, `search --sources`) to answer from. Graded like the other quizzes, as mode 'kb'."""
     from .common import config
+    clock.enter(run, clock.final_time(run))
     store, kb = run.stores / KB_AGENT['id'], run.dir / 'kb'
     repo = kb / 'repo'
     if not repo.exists():
@@ -509,7 +584,7 @@ def kb_quiz(run, digests_budget=None):
             raise SystemExit(f'digests need {script}: deploy a Living Memory build with scripts/ingest_run.py')
         r = run_cmd([config()['python'], str(script), '--root', str(store), '--domain', domain, '--cwd', str(repo),
                      '--budget-usd', str(digests_budget)], cwd=repo, env=sessions.clean_env({'LIVING_MEMORY_ROOT': str(store),
-                     'LIVING_MEMORY_HEADLESS': '1'}), timeout=6 * 3600)
+                     'LIVING_MEMORY_HEADLESS': '1', **clock.lm_env()}), timeout=6 * 3600)   # digests are stamped at the phase time
         (kb / 'digests.out').write_text((r.stdout or '') + (r.stderr or ''), encoding='utf-8')
         run.mark('kb-digests')
     room = quiz_room(run, KB_AGENT['id'])
@@ -560,6 +635,62 @@ def grade(run, mode='memory'):
         write_json(out, {'agent': path.stem, 'answers_sha': digest,
                          **(_last_json(full_final(run, key, row)) or {'error': 'unparsed'})})
     run.mark('grade' if mode == 'memory' else f'grade-{mode}')
+
+
+# ---------------- end-of-run store readout ----------------
+READOUT_DAYS = 120
+READOUT_COMMANDS = (('stats', ['stats', '--days', '{days}', '--json'], True), ('log', ['log', '--limit', '100000', '--json'], False),
+                    ('recap', ['recap', '--days', '{days}', '--json'], True), ('maintenance_history', ['maintenance', 'history', '--limit', '1000', '--json'], False))
+
+
+def _read_store(store, domain, args, windowed, days=READOUT_DAYS):
+    """Run one read-only command; a `--days` window the installed CLI caps (stats: 30, recap: 90) is retried at the cap.
+    Returns (value, days used, error)."""
+    for _ in range(2):
+        try:
+            return stores.lm(store, ['--domain', domain] + [a.format(days=days) for a in args]), days if windowed else None, None
+        except Exception as e:  # noqa: BLE001 an unknown command or a failing store is recorded, not fatal
+            cap = re.search(r'(?:at most|to) (\d+)', str(e)) if windowed else None
+            if not cap or int(cap.group(1)) >= days:
+                return None, days if windowed else None, str(e)[-300:]
+            days = int(cap.group(1))
+    return None, days, 'window retry failed'
+
+
+def readout(run):
+    """Read-only Living Memory commands on every agent store after the work and quizzes, written to stores-readout.json:
+    stats, log, recap and maintenance history, plus the review worklist taken before the first quiz. Recap's `markdown`
+    copy is dropped. Resumable (step `readout`); a command that fails is recorded under `errors` for that store."""
+    if run.options.get('memory') != 'on' or run.done('readout'):
+        return
+    clock.enter(run, clock.readout_time(run))   # after the quiz sessions, which ran at about final_time plus their real duration
+    domain = run.scenario['domain']
+    # Recap has to reach back over the whole simulated run (its window is 90 days at most); stats is a 30-day diary, so a
+    # run with a clock takes per-sprint snapshots in review() and this end-of-run stats is the fallback.
+    needed = (int(run.scenario['sprints']) + 1) * int(run.clock['days_per_sprint']) + 1 if clock.enabled(run) else READOUT_DAYS   # + the day readout_time adds
+    recap_days = min(90, needed)
+    at_quiz = (read_json(run.dir / 'review-at-quiz.json') or {}).get('stores') or {}
+    out = {}
+    for aid in run.agents():
+        store = run.stores / aid
+        if not store.is_dir():
+            continue
+        entry = {'errors': {}, 'days_used': {}}
+        for name, args, windowed in READOUT_COMMANDS:
+            value, days, error = _read_store(store, domain, args, windowed, recap_days if name == 'recap' else READOUT_DAYS)
+            if isinstance(value, dict):
+                value.pop('markdown', None)
+            entry[name] = value
+            if windowed:
+                entry['days_used'][name] = days
+            if error:
+                entry['errors'][name] = error
+        entry['review_at_quiz'] = at_quiz.get(aid)
+        out[aid] = entry
+        log(run, f"readout {aid}: " + ('errors in ' + ', '.join(entry['errors']) if entry['errors'] else 'ok'))
+    write_json(run.dir / 'stores-readout.json', {'ts': now(), 'domain': domain, 'days_requested': READOUT_DAYS,
+                                                'recap_days_needed': needed, 'recap_truncated': needed > 90, 'stores': out})
+    run.mark('readout')
 
 
 # ---------------- smoke & isolation ----------------

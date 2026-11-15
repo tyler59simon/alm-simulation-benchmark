@@ -95,8 +95,8 @@ Ordinary sprint-4 requests that silently need earlier knowledge; score is the pa
 | Re-read share | 0.387 | re-reads over all reads |
 | Tool calls before the first change | 11.5 | exploration before the first edit or commit |
 | Own repeated failures | 0 | an error the agent already hit in an earlier session |
-| Team repeated failures | 4 | an error a teammate hit earlier |
-| Repeated failed Living Memory calls | 18 | memory-tool friction, kept apart from work mistakes |
+| Team repeated failures | 5 | an error a teammate hit earlier |
+| Repeated failed Living Memory calls | 17 | memory-tool friction, kept apart from work mistakes |
 | Stale code lines | 9 | added code matching an outdated decision (heuristic) |
 | Joiner cost ratio | 0.82 | joiners' first sessions vs the team median (1 = same) |
 | App-check regressions | 0 | a check on main that passed and later failed |
@@ -118,9 +118,10 @@ Ordinary sprint-4 requests that silently need earlier knowledge; score is the pa
 | Active notes | 95 |
 | Maps | 14 |
 | Noise-like notes | 27 |
+| Status snapshot notes | 6 |
 | Living Memory calls | 329 |
 | Calls per work session | 1.97 |
-| CLI errors | 0 |
+| CLI errors | 16 |
 | Note updates | 117 |
 | Superseded notes | 5 |
 | Decision docs with a pointer note | 12 of 19 |

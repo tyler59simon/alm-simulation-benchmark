@@ -3,5 +3,6 @@
   "lm_cli": "%LOCALAPPDATA%\\agentic-living-memory\\app\\living_memory.py",
   "claude": "claude",
   "semantic_model_dir": "C:\\Users\\tyler\\LivingMemory\\.models\\potion-retrieval-32M",
-  "lm_repo": "C:\\Users\\tyler\\Documents\\Sandbox\\agentic-living-memory"
+  "lm_repo": "C:\\Users\\tyler\\Documents\\Sandbox\\agentic-living-memory",
+  "clock_days_per_sprint": 14
 }

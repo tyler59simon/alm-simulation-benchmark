@@ -3,6 +3,7 @@ import shutil
 import time
 from pathlib import Path
 
+from . import clock
 from .common import append_jsonl, clean_env, now, run_cmd
 
 GIT_ENV = {'GIT_TERMINAL_PROMPT': '0'}
@@ -12,7 +13,7 @@ NO_EOL = ('-c', 'core.autocrlf=false')
 
 
 def git(cwd, *args, check=True, timeout=300):
-    return run_cmd(['git', *args], cwd=cwd, env=clean_env(GIT_ENV), timeout=timeout, check=check)
+    return run_cmd(['git', *args], cwd=cwd, env=clean_env({**GIT_ENV, **clock.git_env()}), timeout=timeout, check=check)
 
 
 def _identity(repo, name, email):

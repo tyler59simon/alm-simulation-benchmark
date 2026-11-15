@@ -1,12 +1,13 @@
 """alm-simulation-benchmark: simulate an enterprise team whose agents each have a private Living Memory store.
 
     python sim.py smoke   SCENARIO                 tiny harness check on a throwaway run
-    python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic] [--review-user]
+    python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic] [--review-user] [--clock]
                                                    new run folder (repo, clones, stores, toolchain prime, seed CI)
     python sim.py sprint  N [--run RUN]            one sprint (resumable)
     python sim.py run     [--run RUN] [--through N] all sprints (resumable)
     python sim.py quiz    [--run RUN] [--mode memory|repo]  recall quiz (memory only, or with the repo)
     python sim.py grade   [--run RUN] [--mode memory|repo]  grade quiz answers against ground truth
+    python sim.py readout [--run RUN]              read-only Living Memory stats, log, recap and maintenance history per store
     python sim.py analyze [--run RUN]              write metrics.json and print a summary
     python sim.py compare RUN_A RUN_B              diff comparable metrics of two runs
     python sim.py verify-isolation [--run RUN]     no run session in the real store or another agent's store
@@ -40,10 +41,11 @@ def main(argv=None):
                    help="off: no memory at all (A0); builtin: Claude Code's own auto-memory only (A1); on: Living Memory")
     s.add_argument('--semantic', action='store_true', help='install the embedding model into every store')
     s.add_argument('--review-user', action='store_true', help='at each sprint end, archive the notes the review worklist proposes to archive')
+    s.add_argument('--clock', action='store_true', help='simulated calendar: clock_days_per_sprint days per sprint, starting at the run creation time')
     s = sub.add_parser('pipeline', help='init + all sprints + quizzes + grading + probes + grader audit + analysis, resumable')
     s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on')
     s.add_argument('--semantic', action='store_true'); s.add_argument('--run', help='resume this run instead of creating one')
-    s.add_argument('--review-user', action='store_true')
+    s.add_argument('--review-user', action='store_true'); s.add_argument('--clock', action='store_true')
     for name in ('probes', 'grade-audit'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('kb-quiz', help='arm D: a fresh agent answers the quiz from a knowledge base of the finished project')
@@ -53,7 +55,7 @@ def main(argv=None):
     s = sub.add_parser('run'); s.add_argument('--run'); s.add_argument('--through', type=int)
     for name in ('quiz', 'grade'):
         s = sub.add_parser(name); s.add_argument('--run'); s.add_argument('--mode', choices=['memory', 'repo'], default='memory')
-    for name in ('analyze', 'verify-isolation', 'status', 'finish'):
+    for name in ('analyze', 'readout', 'verify-isolation', 'status', 'finish'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('compare'); s.add_argument('a'); s.add_argument('b')
     sub.add_parser('docs', help='write the run log (docs/, Markdown and HTML) from runs/, docs/notes/ and the LM repo history')
@@ -62,7 +64,8 @@ def main(argv=None):
     if a.cmd == 'smoke':
         print(json.dumps(engine.smoke(a.scenario), indent=2))
     elif a.cmd == 'init':
-        run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic, review_user=a.review_user)
+        run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic, review_user=a.review_user,
+                           use_clock=a.clock)
         print(run.dir)
     elif a.cmd in ('sprint', 'run'):
         run = get()
@@ -77,9 +80,11 @@ def main(argv=None):
         engine.grade(get(), a.mode)
     elif a.cmd == 'analyze':
         print(analyze.summary(analyze.analyze(get())))
+    elif a.cmd == 'readout':
+        engine.readout(get())
     elif a.cmd == 'pipeline':
         from simkit import probes
-        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic, review_user=a.review_user)
+        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic, review_user=a.review_user, use_clock=a.clock)
         print(run.dir.name, flush=True)
         try:
             engine.run_all(run)
@@ -92,6 +97,7 @@ def main(argv=None):
         if run.probes:
             probes.grade_probes(run)
         probes.grade_audit(run)
+        engine.readout(run)
         print(analyze.summary(analyze.analyze(run)))
         iso = engine.isolation(run)
         log(run, f"isolation: {'ok' if iso['ok'] else 'FAILED ' + json.dumps(iso)[:400]}")

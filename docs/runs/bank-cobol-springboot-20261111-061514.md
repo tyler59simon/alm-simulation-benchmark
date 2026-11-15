@@ -93,6 +93,7 @@ Should-know scores per fact (1 = every agent who should know it answered correct
 | Active notes | 32 |
 | Maps | 13 |
 | Noise-like notes | 8 |
+| Status snapshot notes | - |
 | Living Memory calls | 72 |
 | Calls per work session | 0.94 |
 | CLI errors | 0 |
