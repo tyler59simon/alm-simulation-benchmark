@@ -1014,5 +1014,17 @@ class ScenarioV3(unittest.TestCase):
         self.assertIn('M4', ids)
 
 
+class SmokeNoteTest(unittest.TestCase):
+    def test_finds_the_created_time_of_the_titled_note(self):
+        store = Path(tempfile.mkdtemp())
+        notes = store / 'domains' / 'team' / 'notes'
+        notes.mkdir(parents=True)
+        (notes / 'other.md').write_text('---\ntitle: "Other"\ncreated: "2026-01-01T00:00:00+00:00"\n---\n', encoding='utf-8')
+        (notes / 'smoke.md').write_text(f'---\ntitle: "{engine.SMOKE_NOTE}"\ncreated: "2027-01-24T10:00:00.123456+00:00"\n---\n',
+                                        encoding='utf-8')
+        self.assertEqual(engine._note_created(store, engine.SMOKE_NOTE), '2027-01-24T10:00:00.123456+00:00')
+        self.assertIsNone(engine._note_created(store, 'Missing'))
+
+
 if __name__ == '__main__':
     unittest.main()

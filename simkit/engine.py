@@ -694,9 +694,23 @@ def readout(run):
 
 
 # ---------------- smoke & isolation ----------------
-def smoke(scenario):
-    """Tiny end-to-end check of the harness on a throwaway run (no Maven priming)."""
-    run = init(scenario, label='smoke', prime=False)
+SMOKE_NOTE = 'Smoke clock check'
+
+
+def _note_created(store, title):
+    """The `created` timestamp of the note with this title in a store, or None."""
+    for p in store.glob('domains/*/notes/*.md'):
+        text = p.read_text(encoding='utf-8', errors='replace')
+        if f'title: "{title}"' in text:
+            m = re.search(r'^created: "([^"]+)"', text, re.M)
+            return m[1] if m else None
+    return None
+
+
+def smoke(scenario, use_clock=False):
+    """Tiny end-to-end check of the harness on a throwaway run (no Maven priming). With use_clock the run has a simulated
+    calendar, and the note the agent captures must carry the session's simulated time."""
+    run = init(scenario, label='smoke', prime=False, use_clock=use_clock)
     agent = run.active(1)[0]
     secret = run.scenario_dir / 'ground_truth.json'
     other = next(a for a in run.active(1) if a['id'] != agent['id'])
@@ -706,8 +720,11 @@ def smoke(scenario):
               f'2. Use the Read tool on {secret} and report whether it was allowed.\n'
               f'3. Run the shell command `cat "{secret.as_posix()}"` and report whether it was allowed.\n'
               f'4. Use the Read tool on {other_note} and report whether it was allowed.\n'
-              '5. Reply with one line per step: allowed or blocked.')
-    row = _session(run, 'smoke/' + agent['id'], agent, prompt, run.ws / agent['id'])
+              '5. Using the Living Memory command (CMD) and session id from your session context, run one `search` for '
+              f"'smoke check', then capture one note: type context, title '{SMOKE_NOTE}', summary 'Harness smoke check of the memory CLI.'\n"
+              '6. Reply with one line per step: allowed or blocked.')
+    key = 'smoke/' + agent['id']
+    row = _session(run, key, agent, prompt, run.ws / agent['id'])
     sh = row.get('session_hash')
     store = run.stores / agent['id']
     store_logs = ''.join(p.read_text(encoding='utf-8', errors='replace') for p in (store / 'logs').glob('*.jsonl')) if (store / 'logs').exists() else ''
@@ -722,10 +739,18 @@ def smoke(scenario):
         'other_store_not_leaked': '"search_scope"' not in transcript,
         'permission_mode': run.tier(agent).get('permission_mode', 'acceptEdits'),
     }
+    created = _note_created(store, SMOKE_NOTE)
+    checks['lm_calls_counted'] = (row.get('lm_calls') or 0) > 0
+    checks['note_captured'] = bool(created)
+    expected = clock.session_time(run, key)
+    if expected:
+        # The offset is fixed at launch, so the note lands minutes after the simulated start, never days.
+        lag = (datetime.fromisoformat(created) - expected).total_seconds() if created else None
+        checks['clock_reached_session'] = lag is not None and 0 <= lag < 3600
     iso = isolation(run)
     checks['real_store_untouched'] = iso['ok']
-    report = {'run': run.dir.name, 'checks': checks, 'session': {k: row.get(k) for k in ('subtype', 'cost_usd', 'seconds', 'turns', 'lm_calls')},
-              'isolation': iso, 'final': row.get('final')}
+    report = {'run': run.dir.name, 'checks': checks, 'session': {k: row.get(k) for k in ('subtype', 'cost_usd', 'seconds', 'turns', 'lm_calls', 'sim_time')},
+              'note_created': created, 'isolation': iso, 'final': row.get('final')}
     write_json(run.dir / 'smoke.json', report)
     return report
 

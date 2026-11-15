@@ -33,7 +33,8 @@ Run folders are never deleted, so every run stays available for comparison (for 
 
 ## Running
 ```
-python sim.py smoke bank-cobol-springboot          # ~$0.10, checks hooks, isolation, deny rules, effort flag
+python sim.py smoke bank-cobol-springboot          # ~$0.10, checks hooks, isolation, deny rules, effort flag, memory calls
+python sim.py smoke bank-cobol-springboot --clock  # also checks that a captured note carries the simulated time
 python sim.py init  bank-cobol-springboot          # new run, primes Maven, CI on the seed
 python sim.py run   [--through N]                  # sprints; resumable, stops at the spend limit
 python sim.py quiz && python sim.py grade && python sim.py readout && python sim.py analyze

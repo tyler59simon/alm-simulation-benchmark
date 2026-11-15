@@ -1,6 +1,6 @@
 """alm-simulation-benchmark: simulate an enterprise team whose agents each have a private Living Memory store.
 
-    python sim.py smoke   SCENARIO                 tiny harness check on a throwaway run
+    python sim.py smoke   SCENARIO [--clock]       tiny harness check on a throwaway run
     python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic] [--review-user] [--clock]
                                                    new run folder (repo, clones, stores, toolchain prime, seed CI)
     python sim.py sprint  N [--run RUN]            one sprint (resumable)
@@ -35,7 +35,7 @@ def main(argv=None):
             pass
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('smoke'); s.add_argument('scenario')
+    s = sub.add_parser('smoke'); s.add_argument('scenario'); s.add_argument('--clock', action='store_true')
     s = sub.add_parser('init'); s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--no-prime', action='store_true')
     s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on',
                    help="off: no memory at all (A0); builtin: Claude Code's own auto-memory only (A1); on: Living Memory")
@@ -62,7 +62,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     get = lambda: resolve_run(a.run) if getattr(a, 'run', None) else latest_run()  # noqa: E731
     if a.cmd == 'smoke':
-        print(json.dumps(engine.smoke(a.scenario), indent=2))
+        print(json.dumps(engine.smoke(a.scenario, use_clock=a.clock), indent=2))
     elif a.cmd == 'init':
         run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic, review_user=a.review_user,
                            use_clock=a.clock)
