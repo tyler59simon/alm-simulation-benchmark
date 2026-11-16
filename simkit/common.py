@@ -114,7 +114,7 @@ def clean_env(extra=None, path_prepend=()):
 
 # Subcommands of the Living Memory CLI that the harness tells apart in transcripts and logs.
 LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'supersede', 'confirm', 'check', 'resolve',
-                  'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'learn', 'timeline',
+                  'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'timeline',
                   'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan',
                   'recap', 'ask', 'maintenance', 'changes', 'source-plan', 'source-sync', 'semantic', 'off', 'on',
                   'status', 'restore', 'log')
