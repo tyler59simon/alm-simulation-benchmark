@@ -145,7 +145,7 @@ To add a run: `sim.py analyze --run RUN`, write `docs/notes/runs/RUN.md`, run `s
 - the `CMD` the hooks give agents is `python <checkout>/living_memory.py ...` (the `alm` launcher on PATH belongs to the installed app, so it is not used).
 `--work-model M` runs every agent except the grader on model M and drops the tier's `--effort` (not every model takes it). Both options go in `manifest.json` `options`. `smoke --lm-src PATH` also checks `short_session_start` and `hooks_from_lm_src`.
 
-Compare two runs: `sim.py analyze` writes `metrics.json` `block_ab` (computed offline from transcripts and stores): captures per work session, sessions with a capture, capture coverage, results carrying `quality_warnings` (and their texts), failed and malformed `alm` calls, hook denies, `alm help` calls and topics, brief notes (title, size, text) and the memory-quiz scores. `sim.py ab RUN_A RUN_B` prints them side by side with the brief contents; `compare-arms` lists the same scalars.
+Compare two runs: `sim.py analyze` writes `metrics.json` `block_ab` (computed offline from transcripts and stores): captures per work session, sessions with a capture, capture coverage, results carrying `quality_warnings` (and their texts), failed and malformed `alm` calls (a call counts as failed when the tool flags an error or its output carries the CLI's `"ok": false`, since a compound shell command can end with exit code 0), hook denies, `alm help` calls and topics, brief notes (title, size, text) and the memory-quiz scores. `sim.py ab RUN_A RUN_B` prints them side by side with the brief contents; `compare-arms` lists the same scalars.
 
 ## Tests
 `py -3.10 -m unittest discover -s tests` runs offline harness tests (no agents, no model).

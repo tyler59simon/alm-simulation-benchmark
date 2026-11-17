@@ -1133,6 +1133,24 @@ class BlockAB(unittest.TestCase):
         self.assertEqual((len(s['errors']), s['malformed']), (2, 1))
         self.assertEqual(s['help'], ['capture'])
 
+    def test_a_failed_call_hidden_by_a_compound_command_still_counts(self):
+        # Block A/B 2026-11-17: most failed calls ran as `alm ... ; echo` or `| head`, so the tool saw exit code 0.
+        bad = json.dumps({'ok': False, 'error': {'code': 'invalid', 'message': "bad_arguments: argument --type: invalid choice: 'constraint'"}})
+        t = jsonl(Path(tempfile.mkdtemp()) / 's1.jsonl', [
+            {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': '1', 'name': 'Bash', 'input': {'command': 'alm --json capture --type constraint --title T; echo done'}}]}},
+            {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': '1', 'content': bad + '\ndone', 'is_error': False}]}},
+            result('done')])
+        s = analyze.block_session(t)
+        self.assertEqual((s['errors'], s['malformed'], s['captures']), (['bad_arguments'], 1, 0))
+        # One call failed and another in the same command succeeded: the error and the write both count.
+        good = json.dumps({'ok': True, 'id': 'n1', 'quality_warnings': ['title has a date']})
+        t = jsonl(Path(tempfile.mkdtemp()) / 's2.jsonl', [
+            {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': '1', 'name': 'Bash', 'input': {'command': 'alm --json capture --title A --why x; alm --json capture --title B'}}]}},
+            {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': '1', 'content': bad + '\n' + good, 'is_error': False}]}},
+            result('done')])
+        s = analyze.block_session(t)
+        self.assertEqual((len(s['errors']), s['malformed'], s['captures'], s['warned_results']), (1, 1, 1, 1))
+
     def test_help_is_a_known_subcommand(self):
         self.assertEqual(lm_call('alm --json help capture'), 'help')
 

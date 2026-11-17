@@ -938,6 +938,11 @@ def readout_metrics(run):
 
 # ---------- block A/B (instruction block old vs new) ----------
 MALFORMED = re.compile(r'usage:|unrecognized arguments|invalid choice|the following arguments are required|expected one argument|error: argument', re.I)
+# The CLI's JSON error shape. A compound shell command (`... ; echo`, `| head`) can end with exit code 0 although the
+# Living Memory call in it failed, so the tool result is not flagged is_error; its text still carries this.
+LM_FAILED = re.compile(r'"ok"\s*:\s*false')
+LM_OK = re.compile(r'"ok"\s*:\s*true')
+LM_ERROR_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]{0,100})')
 HELP_TOPIC = re.compile(r'\bhelp\s+([A-Za-z][\w-]*)')
 CAPTURING = ('capture', 'capture-finalize', 'update', 'supersede')
 
@@ -990,10 +995,12 @@ def block_session(path):
         if r['sub'] == 'help':
             m = HELP_TOPIC.search(r['cmd'])
             out['help'].append(m[1] if m else '')
-        if r['error']:
-            out['errors'].append(r['text'].strip().splitlines()[0][:100] if r['text'].strip() else '')
+        if r['error'] or LM_FAILED.search(r['text']):
+            m = None if r['error'] else LM_ERROR_MESSAGE.search(r['text'])
+            out['errors'].append(m[1].split(':')[0] if m else r['text'].strip().splitlines()[0][:100] if r['text'].strip() else '')
             out['malformed'] += bool(MALFORMED.search(r['text']))
-            continue
+            if r['error'] or not LM_OK.search(r['text']):
+                continue   # a compound command whose other call succeeded still counts that write
         if r['sub'] == 'capture':
             out['captures'] += 1
         if r['sub'] in CAPTURING:
