@@ -1113,11 +1113,11 @@ def ab_transcript(path):
 
     def res(i, content, error=False):
         return {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': i, 'content': content, 'is_error': error}]}}
-    warned = json.dumps({'ref': 'd:1', 'quality_warnings': ['summary is a list', 'title has a date']})
+    warned = json.dumps({'ok': True, 'status': 'created', 'id': 'd:1', 'quality_warnings': ['summary is a list', 'title has a date']})
     return jsonl(path, [
-        use('1', 'alm --json help capture'), res('1', 'Capture usage ...'),
+        use('1', 'alm --json help capture'), res('1', '{"ok": true, "topic": "capture", "markdown": "Capture usage ..."}'),
         use('2', 'alm --json capture --type context --title T'), res('2', [{'type': 'text', 'text': warned}]),
-        use('3', 'alm --json capture --type context --title U'), res('3', '{"ref": "d:2"}'),
+        use('3', 'alm --json capture --type context --title U'), res('3', '{"ok": true, "status": "created", "id": "d:2"}'),
         use('4', 'alm --json capture --bogus'), res('4', 'usage: alm capture\nalm: error: unrecognized arguments: --bogus', True),
         use('5', 'alm --json read missing'), res('5', 'No note matches', True),
         use('6', 'ls'), res('6', 'x'),
@@ -1143,13 +1143,42 @@ class BlockAB(unittest.TestCase):
         s = analyze.block_session(t)
         self.assertEqual((s['errors'], s['malformed'], s['captures']), (['bad_arguments'], 1, 0))
         # One call failed and another in the same command succeeded: the error and the write both count.
-        good = json.dumps({'ok': True, 'id': 'n1', 'quality_warnings': ['title has a date']})
+        good = json.dumps({'ok': True, 'id': 'n1', 'status': 'created', 'quality_warnings': ['title has a date']})
         t = jsonl(Path(tempfile.mkdtemp()) / 's2.jsonl', [
             {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': '1', 'name': 'Bash', 'input': {'command': 'alm --json capture --title A --why x; alm --json capture --title B'}}]}},
             {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': '1', 'content': bad + '\n' + good, 'is_error': False}]}},
             result('done')])
         s = analyze.block_session(t)
         self.assertEqual((len(s['errors']), s['malformed'], s['captures'], s['warned_results']), (1, 1, 1, 1))
+
+    def test_each_call_in_a_compound_command_counts_and_unfinished_calls_do_not(self):
+        def use(i, command):
+            return {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': i, 'name': 'Bash', 'input': {'command': command}}]}}
+
+        def res(i, content):
+            return {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': i, 'content': content, 'is_error': False}]}}
+        ok = json.dumps({'ok': True, 'id': 'n', 'status': 'created'})
+        warned = json.dumps({'ok': True, 'id': 'n', 'status': 'created', 'quality_warnings': ['title has a date']})
+        t = jsonl(Path(tempfile.mkdtemp()) / 's1.jsonl', [
+            use('1', 'alm --json capture --title A; alm --json capture --title B; alm --json capture --title C'), res('1', '\n'.join([ok, warned, ok])),
+            use('2', 'alm --json search x; alm --json capture --title D'), res('2', json.dumps({'ok': True, 'results': []}) + '\n' + ok),
+            # a wrapper the command parser cannot follow: the results still say what ran
+            use('3', 'CMD=("python" "C:/lm/living_memory.py" --json); "${CMD[@]}" capture --title F; "${CMD[@]}" capture --title G'),
+            res('3', ok + '\n' + ok),
+            use('5', 'alm --json capture --title H 2>&1 | tail -c 40'), res('5', 'ests/Account.java"],"inferred_tags":[]}'),   # cut off: unknown
+            use('6', 'alm --json capture --title I 2>&1 | tail -3'), res('6', 'Traceback (most recent call last):\n  File "x"'),   # crashed
+            use('4', 'alm --json capture --title E')])   # the session ended before this call's result
+        s = analyze.block_session(t)
+        self.assertEqual((s['calls'], s['captures'], s['writes'], s['warned_results']), (8, 6, 6, 1))
+        self.assertEqual(s['errors'], ['Traceback (most recent call last):'])
+        self.assertEqual(analyze.lm_calls('alm --json search x && alm --json capture --title D'), ['search', 'capture'])
+
+    def test_automemory_is_read_from_the_runs_private_config_folder(self):
+        home, ws = Path(tempfile.mkdtemp()), Path('C:/runs/r1/ws/dev')
+        mem = home / 'projects' / str(ws).replace(':', '-').replace('\\', '-').replace('/', '-') / 'memory'
+        mem.mkdir(parents=True)
+        (mem / 'MEMORY.md').write_text('x')
+        self.assertEqual(analyze.automemory_files(ws, home), 1)
 
     def test_help_is_a_known_subcommand(self):
         self.assertEqual(lm_call('alm --json help capture'), 'help')
@@ -1160,19 +1189,27 @@ class BlockAB(unittest.TestCase):
         key, quiz_key = 's1d1/dev', 'quiz/dev'
         ab_transcript(run.transcripts / f'{key}.jsonl')
         ab_transcript(run.transcripts / f'{quiz_key}.jsonl')
-        run._state['sessions'] = {key: {'key': key, 'started': '2026-01-01T00:00:00'}, quiz_key: {'key': quiz_key, 'started': '2026-01-02T00:00:00'}}
+        run._state['sessions'] = {key: {'key': key, 'started': '2026-01-01T00:00:00', 'session_hash': 'h-work'},
+                                  quiz_key: {'key': quiz_key, 'started': '2026-01-02T00:00:00', 'session_hash': 'h-quiz'}}
         notes = run.stores / 'dev' / 'domains' / 'd' / 'notes'
         notes.mkdir(parents=True)
         if with_brief:
             (notes / 'b.md').write_text('---\ntitle: "Project brief"\ntype: brief\nstatus: active\ndomain: d\n---\nGoals and owners.\n', encoding='utf-8')
+        captured = {'kind': 'command', 'event': 'capture', 'exit_code': 0, 'status': 'created'}
         jsonl(run.stores / 'dev' / 'logs' / 'a.jsonl', [{'kind': 'hook', 'event': 'pre-tool-use', 'detail': {'decision': 'deny:call-operator'}},
-                                                         {'kind': 'hook', 'event': 'pre-tool-use', 'detail': {'decision': 'allow'}}])
+                                                         {'kind': 'hook', 'event': 'pre-tool-use', 'detail': {'decision': 'allow'}},
+                                                         # the work session's two captures (its transcript sees both), one
+                                                         # more whose output `| tail` cut off, a failed one, and a quiz one
+                                                         {**captured, 'session': 'h-work'}, {**captured, 'session': 'h-work'},
+                                                         {**captured, 'session': 'h-work'},
+                                                         {'kind': 'command', 'event': 'capture', 'exit_code': 2, 'session': 'h-work'},
+                                                         {**captured, 'session': 'h-quiz'}])
         return run
 
     def test_block_ab_headline_covers_the_requested_metrics(self):
         m = analyze.block_ab(self.make_run(True), {'score_should_know': 0.5, 'score_all': 0.4}, {'capture_coverage': {'mean_ratio': 0.7}})
         h = m['headline']
-        self.assertEqual((h['work_sessions'], h['captures'], h['captures_per_work_session'], h['sessions_with_capture']), (1, 2, 2.0, 1))
+        self.assertEqual((h['work_sessions'], h['captures'], h['captures_per_work_session'], h['sessions_with_capture']), (1, 3, 3.0, 1))
         self.assertEqual((h['warned_results'], h['warned_share'], h['warnings']), (1, 0.5, 2))   # work sessions only
         self.assertEqual((h['lm_call_errors'], h['malformed_calls'], h['hook_denies']), (4, 2, 1))   # work and quiz sessions
         self.assertEqual((h['help_calls'], h['sessions_using_help'], h['capture_coverage']), (2, 2, 0.7))
@@ -1190,7 +1227,7 @@ class BlockAB(unittest.TestCase):
         self.assertIn("'Project brief'", text)
         self.assertIn('summary is a list x1', text)
         table = analyze.compare_arms({'A': [a], 'B': [b]})
-        self.assertRegex(table, r'captures/work session\s+2 ± 0 \(n=1\)\s+2 ± 0 \(n=1\)')
+        self.assertRegex(table, r'captures/work session\s+3 ± 0 \(n=1\)\s+3 ± 0 \(n=1\)')
         self.assertRegex(table, r'project briefs\s+1 ± 0 \(n=1\)\s+0 ± 0 \(n=1\)')
 
     def test_no_sessions_gives_empty_headline_not_a_crash(self):

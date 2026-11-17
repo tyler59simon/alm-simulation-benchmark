@@ -8,7 +8,8 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .common import LM_SUBCOMMANDS, clean_env, config, lm_call, read_json, read_jsonl, write_json
+from . import lmsource
+from .common import LM_SUBCOMMANDS, clean_env, config, lm_call, lm_calls, read_json, read_jsonl, write_json
 
 SCHEMA = 4
 NOISE = [r'\b[0-9a-f]{7,40}\b(?=.*commit)|commit [0-9a-f]{7,}', r'(?i)\bsprint \d+ (status|progress|summary)\b',
@@ -117,10 +118,11 @@ def store_metrics(store, truth):
     return m
 
 
-def automemory_files(ws_path):
-    """Claude Code's own auto-memory for the agent's clone (should stay empty where Living Memory applies)."""
+def automemory_files(ws_path, home=None):
+    """Claude Code's own auto-memory for the agent's clone (should stay empty where Living Memory applies). `home` is the
+    Claude config folder the sessions used: a run's private one for lm_src runs, else the user's ~/.claude."""
     mangled = re.sub(r'[:\\/ ._]', '-', str(ws_path))
-    d = Path.home() / '.claude' / 'projects' / mangled / 'memory'
+    d = Path(home or Path.home() / '.claude') / 'projects' / mangled / 'memory'
     return len([p for p in d.rglob('*') if p.is_file()]) if d.exists() else 0
 
 
@@ -938,11 +940,17 @@ def readout_metrics(run):
 
 # ---------- block A/B (instruction block old vs new) ----------
 MALFORMED = re.compile(r'usage:|unrecognized arguments|invalid choice|the following arguments are required|expected one argument|error: argument', re.I)
-# The CLI's JSON error shape. A compound shell command (`... ; echo`, `| head`) can end with exit code 0 although the
-# Living Memory call in it failed, so the tool result is not flagged is_error; its text still carries this.
-LM_FAILED = re.compile(r'"ok"\s*:\s*false')
-LM_OK = re.compile(r'"ok"\s*:\s*true')
+# Each `alm --json` call prints one compact JSON object starting with "ok", and a successful write names itself in
+# "status". These results, not the shell command, decide what ran: agents wrap the CLI in variables, arrays and functions
+# the command parser cannot always follow, and a compound command (`... ; echo`, `| head`) can end with exit code 0
+# although a call in it failed.
+LM_RESULT = re.compile(r'\{"ok"\s*:\s*(true|false)')
+LM_STATUS = re.compile(r'"status"\s*:\s*"([\w-]+)"')
 LM_ERROR_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]{0,100})')
+LM_COMMAND = re.compile(r'living_memory\.py|\balm(?:\.exe)?\s')
+LM_CRASH = re.compile(r"Traceback \(most recent call last\)|can't open file|syntax error near|command not found")
+WRITE_STATUS = {'created': 'capture', 'update': 'update', 'supersede': 'supersede', 'dismissed': 'capture-finalize',
+                'nothing_durable': 'capture-finalize'}
 HELP_TOPIC = re.compile(r'\bhelp\s+([A-Za-z][\w-]*)')
 CAPTURING = ('capture', 'capture-finalize', 'update', 'supersede')
 
@@ -964,10 +972,35 @@ def _warnings_in(text):
         return []
 
 
+def _lm_results(text):
+    """The Living Memory JSON results in a tool result's text, in order, as (ok, top-level status or None, its text)."""
+    found = list(LM_RESULT.finditer(text))
+    out = []
+    for k, m in enumerate(found):
+        own = text[m.start():found[k + 1].start() if k + 1 < len(found) else len(text)]
+        try:
+            status = json.JSONDecoder().raw_decode(own)[0].get('status')
+        except ValueError:   # cut off (`| head -c 600`): the first status in it is the best guess
+            status = (LM_STATUS.search(own) or [None, None])[1]
+        out.append((m[1] == 'true', status, own))
+    return out
+
+
+def _error_label(text):
+    m = LM_ERROR_MESSAGE.search(text)
+    if m:
+        return m[1].split(':')[0].split(',')[0]
+    return text.strip().splitlines()[0][:100] if text.strip() else ''
+
+
 def block_session(path):
     """Living Memory calls of one session from its transcript, each with its result: captures made, the quality
-    warnings their results carried, failed calls (malformed when the result shows a usage error) and `help` calls."""
-    calls, order = {}, []
+    warnings their results carried, failed calls (malformed when the result shows a usage error) and `help` calls.
+    A shell command can run several calls: each JSON result in its output is one call, a successful write is named by
+    its status, and anything else by the k-th subcommand the command parser found. A call without a JSON result of its
+    own has no known outcome and is left out (the session ended first, or `| tail` cut the result off), unless the
+    command failed or its output shows a crash: that is one failed call."""
+    uses, results = {}, {}
     for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
         try:
             ev = json.loads(line)
@@ -982,32 +1015,41 @@ def block_session(path):
                 continue
             if c.get('type') == 'tool_use':
                 cmd = (c.get('input') or {}).get('command')
-                sub = lm_call(cmd)
-                if sub:
-                    calls[c.get('id')] = {'sub': sub, 'cmd': cmd, 'error': False, 'text': ''}
-                    order.append(c.get('id'))
-            elif c.get('type') == 'tool_result' and c.get('tool_use_id') in calls:
-                row = calls[c['tool_use_id']]
-                row['error'], row['text'] = bool(c.get('is_error')), _result_text(c.get('content'))
-    out = {'captures': 0, 'writes': 0, 'warned_results': 0, 'warnings': [], 'errors': [], 'malformed': 0, 'help': [], 'calls': len(order)}
-    for i in order:
-        r = calls[i]
-        if r['sub'] == 'help':
-            m = HELP_TOPIC.search(r['cmd'])
-            out['help'].append(m[1] if m else '')
-        if r['error'] or LM_FAILED.search(r['text']):
-            m = None if r['error'] else LM_ERROR_MESSAGE.search(r['text'])
-            out['errors'].append(m[1].split(':')[0] if m else r['text'].strip().splitlines()[0][:100] if r['text'].strip() else '')
-            out['malformed'] += bool(MALFORMED.search(r['text']))
-            if r['error'] or not LM_OK.search(r['text']):
-                continue   # a compound command whose other call succeeded still counts that write
-        if r['sub'] == 'capture':
-            out['captures'] += 1
-        if r['sub'] in CAPTURING:
-            out['writes'] += 1
-            w = _warnings_in(r['text'])
-            out['warned_results'] += bool(w)
-            out['warnings'] += w
+                subs = lm_calls(cmd)
+                if subs or (isinstance(cmd, str) and LM_COMMAND.search(cmd)):
+                    uses[c.get('id')] = (cmd, subs)
+            elif c.get('type') == 'tool_result' and c.get('tool_use_id') in uses:
+                results[c['tool_use_id']] = (bool(c.get('is_error')), _result_text(c.get('content')))
+    out = {'captures': 0, 'writes': 0, 'warned_results': 0, 'warnings': [], 'errors': [], 'malformed': 0, 'help': [], 'calls': 0}
+    for i, (cmd, subs) in uses.items():
+        if i not in results:
+            continue
+        is_error, text = results[i]
+        parsed, topics = _lm_results(text), HELP_TOPIC.findall(cmd)
+        for k in range(max(len(subs), len(parsed))):
+            sub = subs[k] if k < len(subs) else 'other'
+            if k < len(parsed):
+                ok, status, own = parsed[k]
+                if ok:   # a write names itself; a result that is not a write cannot be one, whatever the parser paired
+                    sub = WRITE_STATUS.get(status) or ('other' if sub in CAPTURING else sub)
+            elif not parsed and subs and k == 0 and (is_error or LM_CRASH.search(text)):   # failed before printing JSON
+                ok, own = False, text
+            else:   # no result of its own (cut off by `| tail`, filtered, never ran): its outcome is unknown
+                continue
+            out['calls'] += 1
+            if sub == 'help':
+                out['help'].append(topics.pop(0) if topics else '')
+            if not ok:
+                out['errors'].append(_error_label(own))
+                out['malformed'] += bool(MALFORMED.search(own))
+                continue
+            if sub == 'capture':
+                out['captures'] += 1
+            if sub in CAPTURING:
+                out['writes'] += 1
+                w = _warnings_in(own)
+                out['warned_results'] += bool(w)
+                out['warnings'] += w
     return out
 
 
@@ -1016,6 +1058,15 @@ def hook_denies(run):
     return dict(Counter(str((r.get('detail') or {}).get('decision')) for store in run.stores.glob('*') if not store.name.startswith('_')
                         for r in _store_logs(store)
                         if r.get('kind') == 'hook' and str((r.get('detail') or {}).get('decision') or '').startswith('deny')))
+
+
+def store_captures(run):
+    """Successful captures per session key, from the stores' own command logs. Exact where the transcript is not: an
+    agent that pipes `alm` through `| tail` never sees the start of the result, so its transcript cannot show the write."""
+    keys = {r['session_hash']: r['key'] for r in run.state()['sessions'].values() if r.get('session_hash')}
+    return Counter(keys.get(r.get('session')) for store in run.stores.glob('*') if not store.name.startswith('_')
+                   for r in _store_logs(store)
+                   if r.get('kind') == 'command' and r.get('event') == 'capture' and r.get('exit_code') == 0)
 
 
 def briefs(notes_by_store):
@@ -1031,6 +1082,9 @@ def block_ab(run, quiz=None, readout=None):
     sessions_ = [r for r in run.state()['sessions'].values() if path(r).exists()]
     every = {r['key']: block_session(path(r)) for r in sessions_}
     per = {k: v for k, v in every.items() if WORK_KEY.match(k) and not k.endswith('.resolve')}
+    stored = store_captures(run)
+    for k, s in per.items():   # captures: what the store recorded; warnings and failures: what the agent saw
+        s['captures'] = stored.get(k, 0)
     n = len(per)
     caps = sum(s['captures'] for s in per.values())
     writes = sum(s['writes'] for s in per.values())
@@ -1087,7 +1141,7 @@ def analyze(run):
     sess = list(state['sessions'].values())
     per_store = {p.name: store_metrics(p, run.truth) for p in sorted(run.stores.glob('*')) if not p.name.startswith('_')}
     for name, m in per_store.items():
-        m['claude_automemory_files'] = automemory_files(run.ws / name)
+        m['claude_automemory_files'] = automemory_files(run.ws / name, lmsource.home_of(run))
     end = read_json(run.dir / END_SNAPSHOT) or {}
     for name, snap in end.items():   # content as of the end of the work; what the quizzes added is kept beside it
         if name in per_store:

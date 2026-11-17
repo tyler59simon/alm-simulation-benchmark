@@ -218,9 +218,15 @@ def lm_call(command):
     Only the first word of a command (or of one stage of a chain, or of a { } block) counts, so `realm`, `palm`, or an
     `alm` inside a path or an argument never match. Variables and shell functions the command defines itself are
     followed (PY="..."; LM="..."; "$PY" "$LM" capture; lm() { python ...; }; lm capture)."""
+    found = lm_calls(command)
+    return found[0] if found else None
+
+
+def lm_calls(command):
+    """Every Living Memory subcommand a shell command runs, in order, one per stage of a chain (see lm_call)."""
     if not isinstance(command, str) or not command.strip():
-        return None
-    variables, functions = {}, {}
+        return []
+    variables, functions, calls = {}, {}, []
     for words in _words(command):
         if len(words) >= 3 and re.fullmatch(r'\$\w+', words[0]) and words[1] == '=':   # PowerShell: $py = "..."
             words = [words[0] + '=' + words[2]] + words[3:]
@@ -241,8 +247,9 @@ def lm_call(command):
         for start in [0] + [j + 1 for j, w in enumerate(words) if w.endswith('{')]:   # also the body of foreach(...){ & $py ... }
             found = _subcommand(words[start:])
             if found:
-                return found
-    return None
+                calls.append(found)
+                break
+    return calls
 
 
 def run_cmd(args, cwd=None, env=None, timeout=None, input=None, check=False):
