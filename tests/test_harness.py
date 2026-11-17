@@ -1167,10 +1167,16 @@ class BlockAB(unittest.TestCase):
             res('3', ok + '\n' + ok),
             use('5', 'alm --json capture --title H 2>&1 | tail -c 40'), res('5', 'ests/Account.java"],"inferred_tags":[]}'),   # cut off: unknown
             use('6', 'alm --json capture --title I 2>&1 | tail -3'), res('6', 'Traceback (most recent call last):\n  File "x"'),   # crashed
+            # a search that worked, then a capture that crashed before printing JSON
+            use('7', 'alm --json search x; alm --json capture --title J'),
+            res('7', json.dumps({'ok': True, 'results': []}) + "\npython.exe: can't open file 'C:/lm/living_memory.py'"),
+            # pretty-printed (`| jq .`) and a saved finalize receipt
+            use('8', 'alm --json capture --title K | jq .; alm --json capture-finalize --session S --note d:1'),
+            res('8', json.dumps({'ok': True, 'status': 'created', 'id': 'k'}, indent=2) + '\n' + json.dumps({'ok': True, 'status': 'saved'})),
             use('4', 'alm --json capture --title E')])   # the session ended before this call's result
         s = analyze.block_session(t)
-        self.assertEqual((s['calls'], s['captures'], s['writes'], s['warned_results']), (8, 6, 6, 1))
-        self.assertEqual(s['errors'], ['Traceback (most recent call last):'])
+        self.assertEqual((s['calls'], s['captures'], s['writes'], s['warned_results']), (12, 7, 8, 1))
+        self.assertEqual(s['errors'], ['Traceback (most recent call last):', "python.exe: can't open file 'C:/lm/living_memory.py'"])
         self.assertEqual(analyze.lm_calls('alm --json search x && alm --json capture --title D'), ['search', 'capture'])
 
     def test_automemory_is_read_from_the_runs_private_config_folder(self):

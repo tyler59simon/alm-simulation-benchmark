@@ -944,13 +944,13 @@ MALFORMED = re.compile(r'usage:|unrecognized arguments|invalid choice|the follow
 # "status". These results, not the shell command, decide what ran: agents wrap the CLI in variables, arrays and functions
 # the command parser cannot always follow, and a compound command (`... ; echo`, `| head`) can end with exit code 0
 # although a call in it failed.
-LM_RESULT = re.compile(r'\{"ok"\s*:\s*(true|false)')
+LM_RESULT = re.compile(r'\{\s*"ok"\s*:\s*(true|false)')   # \s: an agent may pretty-print it (`| jq .`)
 LM_STATUS = re.compile(r'"status"\s*:\s*"([\w-]+)"')
 LM_ERROR_MESSAGE = re.compile(r'"message"\s*:\s*"([^"]{0,100})')
 LM_COMMAND = re.compile(r'living_memory\.py|\balm(?:\.exe)?\s')
 LM_CRASH = re.compile(r"Traceback \(most recent call last\)|can't open file|syntax error near|command not found")
 WRITE_STATUS = {'created': 'capture', 'update': 'update', 'supersede': 'supersede', 'dismissed': 'capture-finalize',
-                'nothing_durable': 'capture-finalize'}
+                'nothing_durable': 'capture-finalize', 'saved': 'capture-finalize'}
 HELP_TOPIC = re.compile(r'\bhelp\s+([A-Za-z][\w-]*)')
 CAPTURING = ('capture', 'capture-finalize', 'update', 'supersede')
 
@@ -984,6 +984,16 @@ def _lm_results(text):
             status = (LM_STATUS.search(own) or [None, None])[1]
         out.append((m[1] == 'true', status, own))
     return out
+
+
+def _after_last_result(text):
+    """Output after the line of the last JSON result (all of it when there is none): where a later call that failed
+    before printing JSON shows its crash."""
+    starts = [m.start() for m in LM_RESULT.finditer(text)]
+    if not starts:
+        return text
+    nl = text.find('\n', starts[-1])
+    return '' if nl < 0 else text[nl + 1:]
 
 
 def _error_label(text):
@@ -1026,14 +1036,15 @@ def block_session(path):
             continue
         is_error, text = results[i]
         parsed, topics = _lm_results(text), HELP_TOPIC.findall(cmd)
+        rest = _after_last_result(text)
         for k in range(max(len(subs), len(parsed))):
             sub = subs[k] if k < len(subs) else 'other'
             if k < len(parsed):
                 ok, status, own = parsed[k]
                 if ok:   # a write names itself; a result that is not a write cannot be one, whatever the parser paired
                     sub = WRITE_STATUS.get(status) or ('other' if sub in CAPTURING else sub)
-            elif not parsed and subs and k == 0 and (is_error or LM_CRASH.search(text)):   # failed before printing JSON
-                ok, own = False, text
+            elif k == len(parsed) and (is_error or LM_CRASH.search(rest)):   # the first call without JSON failed before printing it
+                ok, own = False, rest
             else:   # no result of its own (cut off by `| tail`, filtered, never ran): its outcome is unknown
                 continue
             out['calls'] += 1
