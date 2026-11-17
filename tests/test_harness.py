@@ -11,8 +11,8 @@ from pathlib import Path
 HOME = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HOME))
 
-from simkit import analyze, clock, engine, gitops, probes, replies, sessions, stores  # noqa: E402
-from simkit.common import lm_call  # noqa: E402
+from simkit import analyze, clock, engine, gitops, lmsource, probes, replies, sessions, stores  # noqa: E402
+from simkit.common import Run, lm_call  # noqa: E402
 
 V3 = HOME / 'scenarios' / 'bank-cobol-springboot-v3'
 
@@ -1024,6 +1024,163 @@ class SmokeNoteTest(unittest.TestCase):
                                         encoding='utf-8')
         self.assertEqual(engine._note_created(store, engine.SMOKE_NOTE), '2027-01-24T10:00:00.123456+00:00')
         self.assertIsNone(engine._note_created(store, 'Missing'))
+
+
+class FakeCheckout:
+    """A minimal Living Memory source tree: the two functions simkit.lmsource reads from a checkout."""
+
+    BLOCK = '<!-- agentic-living-memory:begin -->\nshort block\n<!-- agentic-living-memory:end -->'
+
+    def __init__(self):
+        self.dir = Path(tempfile.mkdtemp())
+        (self.dir / 'living_memory.py').write_text('', encoding='utf-8')
+        (self.dir / 'core').mkdir()
+        (self.dir / 'core' / '__init__.py').write_text('', encoding='utf-8')
+        (self.dir / 'core' / 'instructions.py').write_text(
+            f'def instruction_block(harness):\n    return {self.BLOCK!r}\n', encoding='utf-8')
+        (self.dir / 'integrations').mkdir()
+        (self.dir / 'integrations' / '__init__.py').write_text('', encoding='utf-8')
+        (self.dir / 'integrations' / 'setup.py').write_text(
+            "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n"
+            "def hooks(harness):\n    return {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'py', "
+            "'args': [str(ROOT / 'hooks' / 'claude_hooks.py'), 'session-start']}]}]}\n", encoding='utf-8')
+
+
+class LmSource(unittest.TestCase):
+    def setUp(self):
+        self.src = FakeCheckout()
+        self.run_dir = Path(tempfile.mkdtemp())
+        self.saved = {k: os.environ.get(k) for k in ('SIMKIT_LM_CLI', 'SIMKIT_LM_REPO')}
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        for k, v in self.saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+
+    def test_prepare_writes_the_checkouts_block_and_hooks_and_leaves_the_real_config_alone(self):
+        real = Path(tempfile.mkdtemp())
+        (real / '.credentials.json').write_text('{"claudeAiOauth": {}}', encoding='utf-8')
+        home = lmsource.prepare(self.run_dir, self.src.dir, real_claude=real)
+        self.assertEqual(home, self.run_dir / 'claude-home')
+        self.assertEqual((home / 'CLAUDE.md').read_text(encoding='utf-8'), FakeCheckout.BLOCK + '\n')
+        hook = json.loads((home / 'settings.json').read_text(encoding='utf-8'))['hooks']['SessionStart'][0]['hooks'][0]
+        self.assertEqual(Path(hook['args'][0]), self.src.dir.resolve() / 'hooks' / 'claude_hooks.py')
+        self.assertEqual((home / '.credentials.json').read_text(encoding='utf-8'), '{"claudeAiOauth": {}}')
+        self.assertEqual(sorted(p.name for p in real.iterdir()), ['.credentials.json'])   # the source folder is only read
+
+    def test_a_folder_without_the_script_is_refused(self):
+        with self.assertRaises(SystemExit):
+            lmsource.prepare(self.run_dir, tempfile.mkdtemp())
+
+    def test_env_names_both_variables(self):
+        self.assertEqual(lmsource.env(Path('/x/home')), {'CLAUDE_CONFIG_DIR': str(Path('/x/home')), 'CLAUDE_HOME': str(Path('/x/home'))})
+
+    def test_use_lm_src_points_the_harness_cli_at_the_checkout(self):
+        from simkit.common import config, use_lm_src
+        use_lm_src(self.src.dir)
+        self.assertEqual(Path(config()['lm_cli']), self.src.dir.resolve() / 'living_memory.py')
+        self.assertEqual(Path(config()['lm_repo']), self.src.dir.resolve())
+
+    def run_with(self, options):
+        d = Path(tempfile.mkdtemp())
+        scenario = {'tiers': {'haiku': {'model': 'haiku', 'budget_usd': 1.5}, 'sonnet-low': {'model': 'sonnet', 'effort': 'low'},
+                              'grader': {'model': 'sonnet'}}, 'roster': [], 'domain': 'd'}
+        (d / 'scenario').mkdir()
+        (d / 'scenario' / 'scenario.json').write_text(json.dumps(scenario), encoding='utf-8')
+        (d / 'manifest.json').write_text(json.dumps({'options': options}), encoding='utf-8')
+        return Run(d)
+
+    def test_work_model_replaces_every_work_tier_but_not_the_grader(self):
+        run = self.run_with({'work_model': 'haiku'})
+        self.assertEqual(run.tier({'tier': 'sonnet-low'}), {'model': 'haiku'})   # effort dropped: not every model takes it
+        self.assertEqual(run.tier({'tier': 'haiku'}), {'model': 'haiku', 'budget_usd': 1.5})
+        self.assertEqual(run.tier({'tier': 'grader'}), {'model': 'sonnet'})
+        self.assertIsNone(lmsource.home_of(run))
+
+    def test_without_options_nothing_changes(self):
+        run = self.run_with({})
+        self.assertEqual(run.tier({'tier': 'sonnet-low'}), {'model': 'sonnet', 'effort': 'low'})
+
+    def test_a_run_with_lm_src_has_a_private_claude_home_and_keeps_its_checkout_when_resumed(self):
+        run = self.run_with({'lm_src': str(self.src.dir)})
+        self.assertEqual(lmsource.home_of(run), run.dir / 'claude-home')
+        self.assertEqual(Path(os.environ['SIMKIT_LM_CLI']), self.src.dir.resolve() / 'living_memory.py')
+
+
+def ab_transcript(path):
+    def use(i, command):
+        return {'type': 'assistant', 'message': {'content': [{'type': 'tool_use', 'id': i, 'name': 'Bash', 'input': {'command': command}}]}}
+
+    def res(i, content, error=False):
+        return {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': i, 'content': content, 'is_error': error}]}}
+    warned = json.dumps({'ref': 'd:1', 'quality_warnings': ['summary is a list', 'title has a date']})
+    return jsonl(path, [
+        use('1', 'alm --json help capture'), res('1', 'Capture usage ...'),
+        use('2', 'alm --json capture --type context --title T'), res('2', [{'type': 'text', 'text': warned}]),
+        use('3', 'alm --json capture --type context --title U'), res('3', '{"ref": "d:2"}'),
+        use('4', 'alm --json capture --bogus'), res('4', 'usage: alm capture\nalm: error: unrecognized arguments: --bogus', True),
+        use('5', 'alm --json read missing'), res('5', 'No note matches', True),
+        use('6', 'ls'), res('6', 'x'),
+        result('done')])
+
+
+class BlockAB(unittest.TestCase):
+    def test_session_counts_captures_warnings_malformed_and_help(self):
+        t = ab_transcript(Path(tempfile.mkdtemp()) / 's1.jsonl')
+        s = analyze.block_session(t)
+        self.assertEqual((s['captures'], s['writes'], s['warned_results'], s['calls']), (2, 2, 1, 5))
+        self.assertEqual(s['warnings'], ['summary is a list', 'title has a date'])
+        self.assertEqual((len(s['errors']), s['malformed']), (2, 1))
+        self.assertEqual(s['help'], ['capture'])
+
+    def test_help_is_a_known_subcommand(self):
+        self.assertEqual(lm_call('alm --json help capture'), 'help')
+
+    def make_run(self, with_brief):
+        run = FakeRun(tempfile.mkdtemp())
+        run.stores = run.dir / 'stores'
+        key, quiz_key = 's1d1/dev', 'quiz/dev'
+        ab_transcript(run.transcripts / f'{key}.jsonl')
+        ab_transcript(run.transcripts / f'{quiz_key}.jsonl')
+        run._state['sessions'] = {key: {'key': key, 'started': '2026-01-01T00:00:00'}, quiz_key: {'key': quiz_key, 'started': '2026-01-02T00:00:00'}}
+        notes = run.stores / 'dev' / 'domains' / 'd' / 'notes'
+        notes.mkdir(parents=True)
+        if with_brief:
+            (notes / 'b.md').write_text('---\ntitle: "Project brief"\ntype: brief\nstatus: active\ndomain: d\n---\nGoals and owners.\n', encoding='utf-8')
+        jsonl(run.stores / 'dev' / 'logs' / 'a.jsonl', [{'kind': 'hook', 'event': 'pre-tool-use', 'detail': {'decision': 'deny:call-operator'}},
+                                                         {'kind': 'hook', 'event': 'pre-tool-use', 'detail': {'decision': 'allow'}}])
+        return run
+
+    def test_block_ab_headline_covers_the_requested_metrics(self):
+        m = analyze.block_ab(self.make_run(True), {'score_should_know': 0.5, 'score_all': 0.4}, {'capture_coverage': {'mean_ratio': 0.7}})
+        h = m['headline']
+        self.assertEqual((h['work_sessions'], h['captures'], h['captures_per_work_session'], h['sessions_with_capture']), (1, 2, 2.0, 1))
+        self.assertEqual((h['warned_results'], h['warned_share'], h['warnings']), (1, 0.5, 2))   # work sessions only
+        self.assertEqual((h['lm_call_errors'], h['malformed_calls'], h['hook_denies']), (4, 2, 1))   # work and quiz sessions
+        self.assertEqual((h['help_calls'], h['sessions_using_help'], h['capture_coverage']), (2, 2, 0.7))
+        self.assertEqual((h['project_briefs'], h['quiz_score_should_know'], h['quiz_score_all']), (1, 0.5, 0.4))
+        self.assertEqual(m['help_topics'], {'capture': 2})
+        self.assertEqual(m['hook_denies_by_decision'], {'deny:call-operator': 1})
+        self.assertEqual(m['briefs']['dev'][0]['text'], 'Goals and owners.')
+
+    def test_compare_ab_and_arm_table_read_the_same_metrics(self):
+        a = {'run': 'run-A', 'block_ab': analyze.block_ab(self.make_run(True))}
+        b = {'run': 'run-B', 'block_ab': analyze.block_ab(self.make_run(False))}
+        text = analyze.compare_ab(a, b)
+        self.assertIn('captures_per_work_session', text)
+        self.assertIn('project_briefs', text)
+        self.assertIn("'Project brief'", text)
+        self.assertIn('summary is a list x1', text)
+        table = analyze.compare_arms({'A': [a], 'B': [b]})
+        self.assertRegex(table, r'captures/work session\s+2 ± 0 \(n=1\)\s+2 ± 0 \(n=1\)')
+        self.assertRegex(table, r'project briefs\s+1 ± 0 \(n=1\)\s+0 ± 0 \(n=1\)')
+
+    def test_no_sessions_gives_empty_headline_not_a_crash(self):
+        run = FakeRun(tempfile.mkdtemp())
+        run.stores = run.dir / 'stores'
+        h = analyze.block_ab(run)['headline']
+        self.assertEqual((h['work_sessions'], h['captures_per_work_session'], h['warned_share']), (0, None, None))
+
 
 
 if __name__ == '__main__':

@@ -4,7 +4,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import clock
+from . import clock, lmsource
 from .common import append_jsonl, clean_env, config, kill_tree, lm_call, now, rule_path, session_hash
 
 
@@ -119,6 +119,9 @@ def launch(run, key, agent, prompt, cwd, store, tier, allow=(), deny=(), setting
     tc_env, tc_path = run.toolchain_env()
     sim_env = ({'SIM_RUN': str(run.dir), 'SIM_AGENT': agent['id'], 'SIM_AGENT_NAME': agent.get('name', agent['id']),
                 'SIM_WORKSPACE': str(run.workspace)} if run.workspace_enabled else {})
+    home = lmsource.home_of(run)
+    if home:   # lm_src run: this checkout's hooks and instruction block, not the user's ~/.claude
+        extra_env = {**lmsource.env(home), **(extra_env or {})}
     sim_time = clock.session_time(run, key)   # None unless the run has a simulated calendar
     # clean_env strips inherited CLAUDE* and LIVING_MEMORY* variables; the clock variables are passed in, so they survive it.
     env = clean_env({**tc_env, 'LIVING_MEMORY_ROOT': str(store), 'LIVING_MEMORY_LOG_LEVEL': 'debug',

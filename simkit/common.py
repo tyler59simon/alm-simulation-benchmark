@@ -117,7 +117,7 @@ LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'su
                   'reopen', 'open', 'review', 'list', 'stats', 'apply', 'plan', 'undo', 'bind', 'timeline',
                   'history', 'links', 'doctor', 'export', 'import-plan', 'archive-plan', 'merge-plan', 'promote-plan',
                   'recap', 'ask', 'maintenance', 'changes', 'source-plan', 'source-sync', 'semantic', 'off', 'on',
-                  'status', 'restore', 'log')
+                  'status', 'restore', 'log', 'help')
 _LM_OPTIONS_WITH_VALUE = ('--domain', '--root', '--cwd', '--actor')
 _PYTHON = re.compile(r'^(python(\d(\.\d+)?)?|pythonw|py)(\.exe)?$')
 
@@ -263,6 +263,14 @@ def kill_tree(pid):
             pass
 
 
+def use_lm_src(src):
+    """Point the harness's Living Memory CLI and source repo at a checkout (a path or git worktree), for this process:
+    config() reads these SIMKIT_ variables, so stores, version stamps and the readout all use that checkout."""
+    src = str(Path(src).resolve())
+    os.environ['SIMKIT_LM_CLI'] = str(Path(src) / 'living_memory.py')
+    os.environ['SIMKIT_LM_REPO'] = src
+
+
 class Run:
     """A run folder: runs/<scenario>-<timestamp>/ with the frozen scenario copy it was started from."""
 
@@ -270,6 +278,8 @@ class Run:
         self.dir = Path(path).resolve()
         self.manifest = read_json(self.dir / 'manifest.json', {})
         self.options = {'memory': 'on', 'semantic': False, **(self.manifest.get('options') or {})}
+        if self.options.get('lm_src'):
+            use_lm_src(self.options['lm_src'])   # a resumed run keeps using the checkout it started with
         self.workspace = self.dir / 'workspace'   # the company's tools outside the repo: tracker, wiki, chat, hooks
         self.scenario_dir = self.dir / 'scenario'
         self.scenario = read_json(self.scenario_dir / 'scenario.json')
@@ -293,7 +303,11 @@ class Run:
                 if a.get('joins', 1) <= sprint and sprint <= a.get('leaves_after', 10 ** 6)]
 
     def tier(self, agent):
-        return self.scenario['tiers'][agent['tier']]
+        tier = self.scenario['tiers'][agent['tier']]
+        model = self.options.get('work_model')
+        if model and agent['tier'] != 'grader':   # one model for every agent; its tier's effort setting may not exist for it
+            tier = {k: v for k, v in tier.items() if k != 'effort'} | {'model': model}
+        return tier
 
     # ---- state ----
     def state(self):

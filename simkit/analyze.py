@@ -936,6 +936,144 @@ def readout_metrics(run):
     return out
 
 
+# ---------- block A/B (instruction block old vs new) ----------
+MALFORMED = re.compile(r'usage:|unrecognized arguments|invalid choice|the following arguments are required|expected one argument|error: argument', re.I)
+HELP_TOPIC = re.compile(r'\bhelp\s+([A-Za-z][\w-]*)')
+CAPTURING = ('capture', 'capture-finalize', 'update', 'supersede')
+
+
+def _result_text(content):
+    if isinstance(content, list):
+        return '\n'.join(str(c.get('text', '')) if isinstance(c, dict) else str(c) for c in content)
+    return str(content or '')
+
+
+def _warnings_in(text):
+    """The `quality_warnings` list in a capture or update result (the JSON an agent gets), else []."""
+    m = re.search(r'"quality_warnings"\s*:\s*(\[.*?\])', text, re.S)
+    if not m:
+        return []
+    try:
+        return [str(w) for w in json.loads(m.group(1))]
+    except ValueError:
+        return []
+
+
+def block_session(path):
+    """Living Memory calls of one session from its transcript, each with its result: captures made, the quality
+    warnings their results carried, failed calls (malformed when the result shows a usage error) and `help` calls."""
+    calls, order = {}, []
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        msg = ev.get('message') if isinstance(ev, dict) else None
+        content = msg.get('content') if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if c.get('type') == 'tool_use':
+                cmd = (c.get('input') or {}).get('command')
+                sub = lm_call(cmd)
+                if sub:
+                    calls[c.get('id')] = {'sub': sub, 'cmd': cmd, 'error': False, 'text': ''}
+                    order.append(c.get('id'))
+            elif c.get('type') == 'tool_result' and c.get('tool_use_id') in calls:
+                row = calls[c['tool_use_id']]
+                row['error'], row['text'] = bool(c.get('is_error')), _result_text(c.get('content'))
+    out = {'captures': 0, 'writes': 0, 'warned_results': 0, 'warnings': [], 'errors': [], 'malformed': 0, 'help': [], 'calls': len(order)}
+    for i in order:
+        r = calls[i]
+        if r['sub'] == 'help':
+            m = HELP_TOPIC.search(r['cmd'])
+            out['help'].append(m[1] if m else '')
+        if r['error']:
+            out['errors'].append(r['text'].strip().splitlines()[0][:100] if r['text'].strip() else '')
+            out['malformed'] += bool(MALFORMED.search(r['text']))
+            continue
+        if r['sub'] == 'capture':
+            out['captures'] += 1
+        if r['sub'] in CAPTURING:
+            out['writes'] += 1
+            w = _warnings_in(r['text'])
+            out['warned_results'] += bool(w)
+            out['warnings'] += w
+    return out
+
+
+def hook_denies(run):
+    """Pre-tool-use rows the hooks refused, by decision, from the stores' logs."""
+    return dict(Counter(str((r.get('detail') or {}).get('decision')) for store in run.stores.glob('*') if not store.name.startswith('_')
+                        for r in _store_logs(store)
+                        if r.get('kind') == 'hook' and str((r.get('detail') or {}).get('decision') or '').startswith('deny')))
+
+
+def briefs(notes_by_store):
+    return {agent: [{'title': n.get('title'), 'chars': len(n['_body']), 'global': n.get('domain') == '_global', 'text': n['_body'].strip()[:2000]}
+                    for n in notes if n.get('type') == 'brief' and is_active(n)]
+            for agent, notes in notes_by_store.items()}
+
+
+def block_ab(run, quiz=None, readout=None):
+    """Metrics for comparing two runs that differ in the managed instruction block, computed offline from transcripts
+    and stores. `headline` holds the scalars `compare-arms` and `compare` read; the rest is detail for `sim.py ab`."""
+    path = lambda r: run.transcripts / f"{r['key']}.jsonl"   # noqa: E731
+    sessions_ = [r for r in run.state()['sessions'].values() if path(r).exists()]
+    every = {r['key']: block_session(path(r)) for r in sessions_}
+    per = {k: v for k, v in every.items() if WORK_KEY.match(k) and not k.endswith('.resolve')}
+    n = len(per)
+    caps = sum(s['captures'] for s in per.values())
+    writes = sum(s['writes'] for s in per.values())
+    warned = sum(s['warned_results'] for s in per.values())
+    warns = Counter(re.sub(r'\s+', ' ', w)[:90] for s in per.values() for w in s['warnings'])
+    errors = Counter(e for s in every.values() for e in s['errors'])
+    topics = Counter(t or '(none)' for s in every.values() for t in s['help'])
+    denies = hook_denies(run)
+    br = briefs({p.name: store_notes(p) for p in sorted(run.stores.glob('*')) if not p.name.startswith('_')})
+    project = [b for v in br.values() for b in v if not b['global']]
+    q = quiz or {}
+    return {
+        'headline': {
+            'work_sessions': n, 'captures': caps, 'captures_per_work_session': round(caps / n, 2) if n else None,
+            'sessions_with_capture': sum(1 for s in per.values() if s['captures']),
+            'capture_coverage': ((readout or {}).get('capture_coverage') or {}).get('mean_ratio'),
+            'warned_results': warned, 'warned_share': round(warned / writes, 3) if writes else None, 'warnings': sum(warns.values()),
+            'lm_call_errors': sum(len(s['errors']) for s in every.values()),
+            'malformed_calls': sum(s['malformed'] for s in every.values()),
+            'hook_denies': sum(denies.values()),
+            'help_calls': sum(len(s['help']) for s in every.values()),
+            'sessions_using_help': sum(1 for s in every.values() if s['help']),
+            'project_briefs': len(project), 'brief_chars_mean': round(statistics.mean(b['chars'] for b in project)) if project else None,
+            'quiz_score_should_know': q.get('score_should_know'), 'quiz_score_all': q.get('score_all')},
+        'warning_texts': dict(warns.most_common(15)), 'error_texts': dict(errors.most_common(10)),
+        'help_topics': dict(topics), 'hook_denies_by_decision': denies, 'briefs': br,
+        'by_session': {k: {**{x: s[x] for x in ('captures', 'writes', 'warned_results', 'malformed', 'calls')}, 'help': len(s['help']), 'errors': len(s['errors'])}
+                       for k, s in per.items()}}
+
+
+def compare_ab(a, b):
+    """Text side-by-side of two runs' `block_ab` metrics (an old-block run and a new-block run), with the brief contents."""
+    ha, hb = (((m.get('block_ab') or {}).get('headline')) or {} for m in (a, b))
+    keys = list(dict.fromkeys(list(ha) + list(hb)))
+    width = max((len(k) for k in keys), default=10)
+    out = [f"{'metric'.ljust(width)}  {a['run'][-28:]:>28}  {b['run'][-28:]:>28}"]
+    out += [f"{k.ljust(width)}  {str(ha.get(k)):>28}  {str(hb.get(k)):>28}{'  *' if ha.get(k) != hb.get(k) else ''}" for k in keys]
+    for label, key in (('warnings', 'warning_texts'), ('failed LM call results', 'error_texts'), ('help topics', 'help_topics'),
+                       ('hook denies', 'hook_denies_by_decision')):
+        for name, m in (('A', a), ('B', b)):
+            d = (m.get('block_ab') or {}).get(key) or {}
+            out.append(f"{label} {name}: " + ('; '.join(f'{k} x{v}' for k, v in d.items()) or 'none'))
+    for name, m in (('A', a), ('B', b)):
+        out.append(f'briefs {name}:')
+        for agent, items in sorted(((m.get('block_ab') or {}).get('briefs') or {}).items()):
+            for br in items:
+                out.append(f"  {agent} {'global' if br['global'] else 'project'} {br['title']!r} ({br['chars']} chars): " + ' '.join(br['text'].split())[:300])
+    return '\n'.join(out)
+
+
 # ---------- run ----------
 def analyze(run):
     state = run.state()
@@ -1004,6 +1142,7 @@ def analyze(run):
     if review is not None:
         metrics['review'] = review
     metrics['readout'] = readout_metrics(run)
+    metrics['block_ab'] = block_ab(run, metrics.get('quiz'), metrics['readout'])
     write_json(run.dir / 'metrics.json', metrics)
     return metrics
 
@@ -1097,7 +1236,7 @@ def _flat(d, prefix=''):
 
 def compare(a, b):
     """Side-by-side scalar metrics that are comparable across runs."""
-    keep = ('totals.', 'ci.', 'merges.', 'quiz.score', 'quiz.by_fact', 'quiz.by_agent', 'quiz.failure', 'by_tier.')
+    keep = ('totals.', 'ci.', 'merges.', 'quiz.score', 'quiz.by_fact', 'quiz.by_agent', 'quiz.failure', 'by_tier.', 'block_ab.headline.')
     fa = {k: v for k, v in _flat(a).items() if k.startswith(keep)}
     fb = {k: v for k, v in _flat(b).items() if k.startswith(keep)}
     for fid in set(a.get('facts', {})) | set(b.get('facts', {})):
@@ -1154,6 +1293,15 @@ ARM_METRICS = (
     ('auto-resolved notes', lambda m: (m.get('readout') or {}).get('auto_resolved')),
     ('review worklist at quiz', lambda m: ((m.get('readout') or {}).get('due_at_quiz') or {}).get('total')),
     ('call-operator denies', lambda m: (m.get('readout') or {}).get('call_operator_denies')),
+    ('captures/work session', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('captures_per_work_session')),
+    ('sessions with a capture', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('sessions_with_capture')),
+    ('results with quality warnings', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('warned_results')),
+    ('warned share of writes', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('warned_share')),
+    ('failed LM calls', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('lm_call_errors')),
+    ('malformed LM calls', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('malformed_calls')),
+    ('hook denies', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('hook_denies')),
+    ('alm help calls', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('help_calls')),
+    ('project briefs', lambda m: ((m.get('block_ab') or {}).get('headline') or {}).get('project_briefs')),
 )
 
 

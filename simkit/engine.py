@@ -8,9 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from . import clock, gitops, sessions, stores
+from . import clock, gitops, lmsource, sessions, stores
 from .common import (HOME, RUNS, SCENARIOS, Run, append_jsonl, clean_env, config, log, now, read_json, read_jsonl, run_cmd,
-                     tree_hash, write_json)
+                     tree_hash, use_lm_src, write_json)
 
 
 class SpendLimit(Exception):
@@ -47,16 +47,22 @@ def lm_cli_version(cfg):
         return None
 
 
-def init(scenario, label=None, prime=True, memory='on', semantic=False, review_user=False, use_clock=False):
+def init(scenario, label=None, prime=True, memory='on', semantic=False, review_user=False, use_clock=False, lm_src=None,
+         work_model=None):
     """memory='off' runs every agent with hooks disabled (the control arm); semantic=True installs the embedding model
     into each store from the machine's model folder (config semantic_model_dir), offline and hash-verified.
     review_user=True lets the end-of-sprint review archive the notes its worklist proposes to archive.
-    use_clock=True gives the run a simulated calendar (simkit/clock.py) that starts at the run's creation time."""
+    use_clock=True gives the run a simulated calendar (simkit/clock.py) that starts at the run's creation time.
+    lm_src=PATH takes Living Memory from that checkout (CLI, hooks and instruction block, see simkit/lmsource.py) and
+    gives the agents a private Claude config folder. work_model=NAME runs every work agent on that model."""
     src = SCENARIOS / scenario
     if not (src / 'scenario.json').exists():
         raise SystemExit(f'No scenario {scenario}')
     if memory not in ('on', 'off', 'builtin'):
         raise SystemExit("memory must be 'on', 'off' or 'builtin'")
+    if lm_src:
+        use_lm_src(lm_src)   # before config(): the manifest's version stamps and every store bootstrap use this checkout
+        lm_src = str(Path(lm_src).resolve())
     cfg = config()
     if semantic and not Path(cfg.get('semantic_model_dir') or '').is_dir():
         raise SystemExit(f"semantic: no model folder at {cfg.get('semantic_model_dir')!r} (set semantic_model_dir in simkit/config.json)")
@@ -69,10 +75,14 @@ def init(scenario, label=None, prime=True, memory='on', semantic=False, review_u
     write_json(path / 'manifest.json', {
         'scenario': scenario, 'label': label, 'created': created, 'scenario_sha256': tree_hash([src])[:16],
         'living_memory': lm_version(cfg), 'claude_code': claude_v, 'harness_sha256': tree_hash([HOME / 'simkit'])[:16],
-        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic), 'review_user': bool(review_user), 'clock': bool(use_clock)},
+        'real_store': cfg.get('real_store'), 'options': {'memory': memory, 'semantic': bool(semantic), 'review_user': bool(review_user), 'clock': bool(use_clock),
+                    **({'lm_src': lm_src} if lm_src else {}), **({'work_model': work_model} if work_model else {})},
         'clock': clock.settings(use_clock, created, cfg), 'finished': None})
     run = Run(path)
     log(run, f'init {path.name}')
+    if lm_src:
+        lmsource.prepare(path, lm_src)
+        log(run, f'living memory from {lm_src}, claude config in {lmsource.home_of(run)}')
     if run.workspace_enabled:
         setup_workspace(run)
     gitops.init_repo(run)
@@ -707,10 +717,10 @@ def _note_created(store, title):
     return None
 
 
-def smoke(scenario, use_clock=False):
+def smoke(scenario, use_clock=False, lm_src=None, work_model=None):
     """Tiny end-to-end check of the harness on a throwaway run (no Maven priming). With use_clock the run has a simulated
     calendar, and the note the agent captures must carry the session's simulated time."""
-    run = init(scenario, label='smoke', prime=False, use_clock=use_clock)
+    run = init(scenario, label='smoke', prime=False, use_clock=use_clock, lm_src=lm_src, work_model=work_model)
     agent = run.active(1)[0]
     secret = run.scenario_dir / 'ground_truth.json'
     other = next(a for a in run.active(1) if a['id'] != agent['id'])
@@ -739,6 +749,11 @@ def smoke(scenario, use_clock=False):
         'other_store_not_leaked': '"search_scope"' not in transcript,
         'permission_mode': run.tier(agent).get('permission_mode', 'acceptEdits'),
     }
+    if lm_src:
+        # The checkout's block is in the agents' config folder, so SessionStart takes the short path and the hooks ran from it.
+        checks['short_session_start'] = 'follow the Living Memory section of your instructions' in transcript
+        hook = json.loads((lmsource.home_of(run) / 'settings.json').read_text(encoding='utf-8'))['hooks']['SessionStart'][0]['hooks'][0]
+        checks['hooks_from_lm_src'] = Path(hook['args'][0]).resolve() == (Path(lm_src).resolve() / 'hooks' / 'claude_hooks.py')
     created = _note_created(store, SMOKE_NOTE)
     checks['lm_calls_counted'] = (row.get('lm_calls') or 0) > 0
     checks['note_captured'] = bool(created)

@@ -1,7 +1,8 @@
 """alm-simulation-benchmark: simulate an enterprise team whose agents each have a private Living Memory store.
 
-    python sim.py smoke   SCENARIO [--clock]       tiny harness check on a throwaway run
+    python sim.py smoke   SCENARIO [--clock] [--lm-src P] [--work-model M]  tiny harness check on a throwaway run
     python sim.py init    SCENARIO [--label L] [--memory on|off] [--semantic] [--review-user] [--clock]
+                                  [--lm-src PATH] [--work-model M]
                                                    new run folder (repo, clones, stores, toolchain prime, seed CI)
     python sim.py sprint  N [--run RUN]            one sprint (resumable)
     python sim.py run     [--run RUN] [--through N] all sprints (resumable)
@@ -10,6 +11,7 @@
     python sim.py readout [--run RUN]              read-only Living Memory stats, log, recap and maintenance history per store
     python sim.py analyze [--run RUN]              write metrics.json and print a summary
     python sim.py compare RUN_A RUN_B              diff comparable metrics of two runs
+    python sim.py ab      RUN_A RUN_B              old-block vs new-block: captures, warnings, help calls, briefs, quiz
     python sim.py verify-isolation [--run RUN]     no run session in the real store or another agent's store
     python sim.py status  [--run RUN]              steps done, sessions, spend
     python sim.py docs                             write the run log in docs/ (Markdown and HTML)
@@ -36,16 +38,21 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='cmd', required=True)
     s = sub.add_parser('smoke'); s.add_argument('scenario'); s.add_argument('--clock', action='store_true')
+    s.add_argument('--lm-src'); s.add_argument('--work-model')
     s = sub.add_parser('init'); s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--no-prime', action='store_true')
     s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on',
                    help="off: no memory at all (A0); builtin: Claude Code's own auto-memory only (A1); on: Living Memory")
     s.add_argument('--semantic', action='store_true', help='install the embedding model into every store')
     s.add_argument('--review-user', action='store_true', help='at each sprint end, archive the notes the review worklist proposes to archive')
     s.add_argument('--clock', action='store_true', help='simulated calendar: clock_days_per_sprint days per sprint, starting at the run creation time')
+    for flag, text in (('--lm-src', 'Living Memory source checkout (path or git worktree): its CLI, hooks and instruction block; agents get a private Claude config folder'),
+                       ('--work-model', 'run every work agent on this model (e.g. haiku), dropping tier effort settings')):
+        s.add_argument(flag, help=text)
     s = sub.add_parser('pipeline', help='init + all sprints + quizzes + grading + probes + grader audit + analysis, resumable')
     s.add_argument('scenario'); s.add_argument('--label'); s.add_argument('--memory', choices=['on', 'off', 'builtin'], default='on')
     s.add_argument('--semantic', action='store_true'); s.add_argument('--run', help='resume this run instead of creating one')
     s.add_argument('--review-user', action='store_true'); s.add_argument('--clock', action='store_true')
+    s.add_argument('--lm-src'); s.add_argument('--work-model')
     for name in ('probes', 'grade-audit'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('kb-quiz', help='arm D: a fresh agent answers the quiz from a knowledge base of the finished project')
@@ -58,14 +65,16 @@ def main(argv=None):
     for name in ('analyze', 'readout', 'verify-isolation', 'status', 'finish'):
         sub.add_parser(name).add_argument('--run')
     s = sub.add_parser('compare'); s.add_argument('a'); s.add_argument('b')
+    s = sub.add_parser('ab', help='old-block run vs new-block run: captures, warnings, help calls, briefs, quiz')
+    s.add_argument('a'); s.add_argument('b')
     sub.add_parser('docs', help='write the run log (docs/, Markdown and HTML) from runs/, docs/notes/ and the LM repo history')
     a = p.parse_args(argv)
     get = lambda: resolve_run(a.run) if getattr(a, 'run', None) else latest_run()  # noqa: E731
     if a.cmd == 'smoke':
-        print(json.dumps(engine.smoke(a.scenario, use_clock=a.clock), indent=2))
+        print(json.dumps(engine.smoke(a.scenario, use_clock=a.clock, lm_src=a.lm_src, work_model=a.work_model), indent=2))
     elif a.cmd == 'init':
         run = engine.init(a.scenario, a.label, prime=not a.no_prime, memory=a.memory, semantic=a.semantic, review_user=a.review_user,
-                           use_clock=a.clock)
+                           use_clock=a.clock, lm_src=a.lm_src, work_model=a.work_model)
         print(run.dir)
     elif a.cmd in ('sprint', 'run'):
         run = get()
@@ -84,7 +93,8 @@ def main(argv=None):
         engine.readout(get())
     elif a.cmd == 'pipeline':
         from simkit import probes
-        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic, review_user=a.review_user, use_clock=a.clock)
+        run = resolve_run(a.run) if a.run else engine.init(a.scenario, a.label, memory=a.memory, semantic=a.semantic, review_user=a.review_user, use_clock=a.clock,
+                                                 lm_src=a.lm_src, work_model=a.work_model)
         print(run.dir.name, flush=True)
         try:
             engine.run_all(run)
@@ -118,6 +128,8 @@ def main(argv=None):
             name, _, runs = spec.partition('=')
             arms[name] = [read_json(resolve_run(r).dir / 'metrics.json') for r in runs.split(',') if r]
         print(analyze.compare_arms(arms))
+    elif a.cmd == 'ab':
+        print(analyze.compare_ab(read_json(resolve_run(a.a).dir / 'metrics.json'), read_json(resolve_run(a.b).dir / 'metrics.json')))
     elif a.cmd == 'compare':
         text, diffs = analyze.compare(read_json(resolve_run(a.a).dir / 'metrics.json'), read_json(resolve_run(a.b).dir / 'metrics.json'))
         print(text)

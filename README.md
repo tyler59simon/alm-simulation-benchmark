@@ -138,6 +138,15 @@ Schema 3 adds `status_snapshots` (active notes of type `status`, per store and i
 
 To add a run: `sim.py analyze --run RUN`, write `docs/notes/runs/RUN.md`, run `sim.py docs`, commit `docs/`. Generated pages replace home-folder paths with `~`. Generated pages are overwritten on every build; the notes are never touched.
 
+## Testing another Living Memory build (`--lm-src`, `--work-model`)
+`init` and `pipeline` take `--lm-src PATH`, a Living Memory source checkout (for example a git worktree of main or of a feature branch). The run then uses that checkout everywhere:
+- the harness CLI (`stores.lm`, bootstrap, readout) and the manifest's version stamps (`SIMKIT_LM_CLI` / `SIMKIT_LM_REPO` are set for the process from `options.lm_src`, so resumed runs keep it);
+- a private Claude config folder `runs/<run>/claude-home/` built by `simkit/lmsource.py`: `settings.json` with the hooks that checkout's `integrations/setup.py` generates (they run its `hooks/claude_hooks.py`), `CLAUDE.md` holding exactly its `core.instructions.instruction_block('claude')`, a copy of the real `~/.claude/.credentials.json`, and a minimal `.claude.json`. Every session gets `CLAUDE_CONFIG_DIR` and `CLAUDE_HOME` pointing there, so SessionStart sees the block and takes the short path, and the real `~/.claude` is only read (for the login), never written. The agents see only the block, not the user's personal `CLAUDE.md`.
+- the `CMD` the hooks give agents is `python <checkout>/living_memory.py ...` (the `alm` launcher on PATH belongs to the installed app, so it is not used).
+`--work-model M` runs every agent except the grader on model M and drops the tier's `--effort` (not every model takes it). Both options go in `manifest.json` `options`. `smoke --lm-src PATH` also checks `short_session_start` and `hooks_from_lm_src`.
+
+Compare two runs: `sim.py analyze` writes `metrics.json` `block_ab` (computed offline from transcripts and stores): captures per work session, sessions with a capture, capture coverage, results carrying `quality_warnings` (and their texts), failed and malformed `alm` calls, hook denies, `alm help` calls and topics, brief notes (title, size, text) and the memory-quiz scores. `sim.py ab RUN_A RUN_B` prints them side by side with the brief contents; `compare-arms` lists the same scalars.
+
 ## Tests
 `py -3.10 -m unittest discover -s tests` runs offline harness tests (no agents, no model).
 
@@ -153,4 +162,4 @@ Copy `scenarios/bank-cobol-springboot`, then change the roster, waves, seed, CI 
 - Without `--clock` all sessions run on the same real day, so LM's time-based features (review_by dates, staleness, auto-resolve) are not exercised. With it, they are exercised on a simulated calendar, but notes' ages come from the offset, not from real waiting (see above).
 - Governed LM operations (plans and apply) can't be approved in headless mode. Watch for agents trying them.
 - Fact detection in stores is regex-based. The quiz grades and a qualitative review are the authoritative signals.
-- Possible future addition: a per-run `CLAUDE_CONFIG_DIR`, to test an LM development build instead of the installed app (the hooks currently come from the user-level `~/.claude/settings.json`).
+- Runs without `--lm-src` still use the user's real `~/.claude` (hooks and `CLAUDE.md`) and the installed app; see below for testing another Living Memory build.
