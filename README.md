@@ -10,7 +10,7 @@ Run folders are never deleted, so every run stays available for comparison (for 
   - `engine.py`: init, sprints (waves, merges, CI), handovers, quiz, grading, smoke test, isolation.
   - `sessions.py`: the `claude -p` launcher: per-agent `LIVING_MEMORY_ROOT`, budget, timeout, deny rules, stream-json transcript.
   - `clock.py`: the simulated calendar (`init --clock`, see below).
-  - `stores.py`: store bootstrap (bind, then migration plan and apply, then taxonomy plan and apply, then sandbox marker) and export/import handover. It never calls `setup`, so the real `config.json` is never touched.
+  - `stores.py`: store bootstrap (bind, then migration plan and apply, then `taxonomy add`, then sandbox marker) and export/import handover. It never calls `setup`, so the real `config.json` is never touched.
   - `gitops.py`: bare origin, one persistent clone per agent, an integration clone that merges and runs CI.
   - `analyze.py`: `metrics.json` (fixed schema), the summary, and `compare`.
   - `config.json`: machine paths (Python, installed LM CLI, claude). Override any key with `SIMKIT_<KEY>`.
@@ -110,7 +110,7 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 ## Review metrics (schema 3)
 Schema 3 adds `status_snapshots` (active notes of type `status`, per store and in `totals`) and, for runs with Living Memory on, an end-of-sprint review:
 - After each sprint's last day the harness runs `review --domain D --limit 100` on every agent store and appends `{sprint, agent, counts, items}` to `reviews.jsonl` (a failing store is logged and skipped). The step is `sN/review`, so a resumed run does not repeat it.
-- `init --review-user` (also on `pipeline`) adds a simulated user: for each `archive-plan` row it runs `plan archive REF` and applies the plan, recorded under `applied`. Merge, update, confirm and other rows are only logged.
+- `init --review-user` (also on `pipeline`) adds a simulated user: for each `archive` row it runs `archive REF` (a direct, undoable write), recorded under `applied`. Merge, update, confirm and other rows are only logged.
 - `metrics.json` `review` (absent when the run has no `reviews.jsonl`): `worklist_precision` (real / judged, null when nothing was judged), `judged`, `unjudged`, `by_kind` {rows, judged, real}, `review_rows` (worklist size by kind per sprint) and `plans_applied`. A row is judged under its first kind against the note as it is in the store at analysis time (the row's title and type when the note is gone): stale and due are real for a status note or a note matching a fact's stale and not its current patterns, false when it matches a current pattern; duplicate is real when the note and its pair match the same fact; warned and noisy are real when the text matches the noise patterns and false when the note holds a current fact. Anything else is unjudged.
 
 ## Work metrics (schema 2)

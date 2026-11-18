@@ -474,7 +474,7 @@ def run_page(r, prev, window):
         rv = m.get('review')
         if rv:
             rows += [['Review worklist precision', f"{f(rv.get('worklist_precision'))} ({f(rv.get('judged'))} judged, {f(rv.get('unjudged'))} unjudged)"],
-                     ['Review plans applied', rv.get('plans_applied')]]
+                     ['Review archives', rv.get('plans_applied')]]
         rows += [[f'Hook {e} p50 / p95 ms', f"{f(v.get('p50'))} / {f(v.get('p95'))} (n={f(v.get('n'))})"] for e, v in hl.items()]
         secs.append({'title': 'Memory stores', 'blocks': [('table', ['Measure', 'Value'], rows)]})
     ci, mg, app = m.get('ci') or {}, m.get('merges') or {}, m.get('app') or {}

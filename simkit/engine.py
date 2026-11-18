@@ -361,13 +361,12 @@ def review(run, n):
             if run.options.get('review_user'):
                 entry['applied'], entry['errors'] = [], []
                 for row in items:
-                    if row.get('action') != 'archive-plan':
+                    if row.get('action') != 'archive':
                         continue
                     try:
-                        plan = stores.lm(store, ['--domain', domain, 'plan', 'archive', row['ref']])
-                        stores._apply(store, plan, domain)
-                        entry['applied'].append({'ref': row['ref'], 'plan_id': plan.get('plan_id')})
-                    except Exception as e:  # noqa: BLE001 one bad plan must not stop the others
+                        done = stores.lm(store, ['--domain', domain, 'archive', row['ref']])
+                        entry['applied'].append({'ref': row['ref'], 'operation_id': done.get('operation_id')})
+                    except Exception as e:  # noqa: BLE001 one bad archive must not stop the others
                         entry['errors'].append({'ref': row.get('ref'), 'error': str(e)[-300:]})
         except Exception as e:  # noqa: BLE001 a failed review must not stop the sprint
             entry['error'] = str(e)[-300:]
@@ -583,7 +582,7 @@ def kb_quiz(run, digests_budget=None):
                 if folder.is_dir():
                     payload = kb / f'source-{name}.json'
                     write_json(payload, {'name': name, 'domain': domain, 'kind': kind, 'path': str(folder)})
-                    stores._apply(store, stores.lm(store, ['--domain', domain, 'source-plan', 'add', '--payload-file', str(payload)]), domain)
+                    stores.lm(store, ['--domain', domain, 'source', 'add', '--payload-file', str(payload)])
     if not run.done('kb-sync'):
         synced = stores.lm(store, ['--domain', domain, 'source-sync'], cwd=repo)
         write_json(kb / 'sync.json', synced)

@@ -437,7 +437,7 @@ class SprintReview(unittest.TestCase):
 
     def stub(self):
         calls = []
-        rows = [{'ref': 'd:11111111', 'kinds': ['duplicate'], 'action': 'archive-plan'},
+        rows = [{'ref': 'd:11111111', 'kinds': ['duplicate'], 'action': 'archive'},
                 {'ref': 'd:22222222', 'kinds': ['stale'], 'action': 'update'},
                 {'ref': 'd:33333333', 'kinds': ['duplicate'], 'action': 'merge-plan'}]
 
@@ -447,7 +447,7 @@ class SprintReview(unittest.TestCase):
                 if Path(store).name == 'po':
                     raise RuntimeError('review failed')
                 return {'ok': True, 'due': 3, 'stale_digests': 1, 'counts': {'duplicate': 2, 'stale': 1}, 'notes': rows}   # the CLI's review shape
-            return {'plan_id': 'plan-1', 'digest': 'abc'}
+            return {'ok': True, 'operation_id': 'd-op1'}
 
         applied = []
         saved = (engine.stores.lm, engine.stores._apply)
@@ -471,14 +471,14 @@ class SprintReview(unittest.TestCase):
         engine.review(run, 2)   # resumed: nothing is asked twice
         self.assertEqual(len((run.dir / 'reviews.jsonl').read_text(encoding='utf-8').splitlines()), 2)
 
-    def test_review_user_archives_only_archive_plan_rows(self):
+    def test_review_user_archives_only_archive_rows(self):
         run = self.make_run(review_user=True)
         calls, applied = self.stub()
         engine.review(run, 1)
         rows = [json.loads(x) for x in (run.dir / 'reviews.jsonl').read_text(encoding='utf-8').splitlines()]
-        self.assertEqual(rows[1]['applied'], [{'ref': 'd:11111111', 'plan_id': 'plan-1'}])
-        self.assertEqual(applied, [('qa', 'plan-1', 'd')])
-        self.assertEqual([a for _, a in calls if 'plan' in a], [['--domain', 'd', 'plan', 'archive', 'd:11111111']])
+        self.assertEqual(rows[1]['applied'], [{'ref': 'd:11111111', 'operation_id': 'd-op1'}])
+        self.assertEqual(applied, [])   # a direct write: nothing to apply
+        self.assertEqual([a for _, a in calls if 'archive' in a], [['--domain', 'd', 'archive', 'd:11111111']])
 
     def test_no_review_without_living_memory(self):
         run = self.make_run(memory='builtin')
@@ -525,7 +525,7 @@ class LmCall(unittest.TestCase):
             self.assertIsNone(lm_call(cmd), cmd)
 
     def test_new_subcommands_are_known(self):
-        for sub in ('recap', 'ask', 'maintenance', 'changes', 'source-plan', 'source-sync', 'semantic', 'off', 'on', 'status', 'restore', 'log',
+        for sub in ('recap', 'ask', 'maintenance', 'changes', 'source', 'archive', 'taxonomy', 'source-sync', 'semantic', 'off', 'on', 'status', 'restore', 'log',
                     'history', 'stats'):
             self.assertEqual(lm_call(f'alm --json {sub}'), sub)
 

@@ -47,7 +47,7 @@ def bootstrap(store, domain, bind_paths, taxonomy_extra=()):
     write_json(store / 'sandbox.json', {'sandbox': True})
     extra = [t for t in taxonomy_extra if t not in (json.loads((store / 'tag_taxonomy.json').read_text(encoding='utf-8')).get('tags') or [])]
     if extra:
-        _apply(store, lm(store, ['taxonomy-plan'] + extra))
+        lm(store, ['taxonomy', 'add'] + extra)
     return lm(store, ['doctor'])
 
 

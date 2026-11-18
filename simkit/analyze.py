@@ -1234,7 +1234,7 @@ def summary(m):
     rv = m.get('review')
     if rv:
         lines.append(f"review: worklist precision {rv['worklist_precision']} ({rv['judged']} judged, {rv['unjudged']} unjudged), "
-                     f"{rv['plans_applied']} plans applied")
+                     f"{rv['plans_applied']} review archives")
     ro = m.get('readout') or {}
     if ro.get('capture_coverage'):
         lines.append(f"readout: capture coverage {ro['capture_coverage']['mean_ratio']}, reminders {ro['reminders_by_kind']}, "
@@ -1358,7 +1358,7 @@ ARM_METRICS = (
     ('stale notes (D1)', lambda m: len(((m.get('facts') or {}).get('D1') or {}).get('stores_with_stale_only') or [])),
     ('status snapshot notes', lambda m: (m.get('totals') or {}).get('status_snapshots')),
     ('review worklist precision', lambda m: (m.get('review') or {}).get('worklist_precision')),
-    ('review plans applied', lambda m: (m.get('review') or {}).get('plans_applied')),
+    ('review archives', lambda m: (m.get('review') or {}).get('plans_applied')),
     ('capture coverage (mean ratio)', lambda m: ((m.get('readout') or {}).get('capture_coverage') or {}).get('mean_ratio')),
     ('reminders (all kinds)', lambda m: sum(((m.get('readout') or {}).get('reminders_by_kind') or {}).values()) if (m.get('readout') or {}).get('capture_coverage') else None),
     ('fix reminder follow-through', lambda m: ((m.get('readout') or {}).get('fix_reminder_followthrough') or {}).get('rate')),
