@@ -393,7 +393,7 @@ class ReviewMetrics(unittest.TestCase):
         self.assertEqual(m['by_kind']['warned'], {'rows': 3, 'judged': 2, 'real': 1})
         self.assertEqual(m['by_kind']['noisy'], {'rows': 3, 'judged': 3, 'real': 2})
         self.assertEqual(m['review_rows'], {'1': {'stale': 3, 'due': 2}, '2': {'duplicate': 2, 'warned': 3, 'noisy': 3}})
-        self.assertEqual(m['plans_applied'], 1)
+        self.assertEqual(m['review_archives'], 1)
 
     def test_nothing_judged_gives_no_precision(self):
         jsonl(self.run.dir / 'reviews.jsonl', [{'sprint': 1, 'agent': 'po', 'counts': {'interim': 1}, 'items': [self.row('interim', 'dddddddd')]}])
@@ -439,7 +439,7 @@ class SprintReview(unittest.TestCase):
         calls = []
         rows = [{'ref': 'd:11111111', 'kinds': ['duplicate'], 'action': 'archive'},
                 {'ref': 'd:22222222', 'kinds': ['stale'], 'action': 'update'},
-                {'ref': 'd:33333333', 'kinds': ['duplicate'], 'action': 'merge-plan'}]
+                {'ref': 'd:33333333', 'kinds': ['duplicate'], 'action': 'merge'}]
 
         def lm(store, args, payload=None, actor=None, cwd=None):
             calls.append((Path(store).name, list(args)))
@@ -450,10 +450,9 @@ class SprintReview(unittest.TestCase):
             return {'ok': True, 'operation_id': 'd-op1'}
 
         applied = []
-        saved = (engine.stores.lm, engine.stores._apply)
+        saved = engine.stores.lm
         engine.stores.lm = lm
-        engine.stores._apply = lambda store, plan, domain=None: applied.append((Path(store).name, plan['plan_id'], domain))
-        self.addCleanup(lambda: (setattr(engine.stores, 'lm', saved[0]), setattr(engine.stores, '_apply', saved[1])))
+        self.addCleanup(lambda: setattr(engine.stores, 'lm', saved))
         return calls, applied
 
     def test_review_logs_rows_and_survives_a_failing_store(self):

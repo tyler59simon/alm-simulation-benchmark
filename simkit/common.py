@@ -118,6 +118,8 @@ LM_SUBCOMMANDS = ('capture-finalize', 'capture', 'search', 'read', 'update', 'su
                   'history', 'links', 'doctor', 'export', 'import-plan', 'merge-plan', 'archive', 'rewrite', 'remap', 'promote',
                   'taxonomy', 'source', 'project', 'system', 'change', 'recap', 'ask', 'maintenance', 'changes',
                   'source-sync', 'semantic', 'off', 'on',
+                  # Direct bulk writes since Living Memory removed plans (2026-11-26); the plan names above stay for older runs.
+                  'delete', 'merge', 'retag', 'migrate', 'restore-backup', 'import', 'ingest',
                   'status', 'restore', 'log', 'help')
 _LM_OPTIONS_WITH_VALUE = ('--domain', '--root', '--cwd', '--actor')
 _PYTHON = re.compile(r'^(python(\d(\.\d+)?)?|pythonw|py)(\.exe)?$')

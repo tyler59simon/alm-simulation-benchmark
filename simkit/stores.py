@@ -24,11 +24,6 @@ def lm(store, args, payload=None, actor=None, cwd=None):
     return value
 
 
-def _apply(store, plan, domain=None):
-    args = (['--domain', domain] if domain else []) + ['apply', plan['plan_id'], '--expected-plan-sha256', plan['digest']]
-    return lm(store, args)
-
-
 def assert_not_real(store):
     real = config().get('real_store')
     if real and Path(store).resolve() == Path(real).resolve():
@@ -43,7 +38,7 @@ def bootstrap(store, domain, bind_paths, taxonomy_extra=()):
     for p in bind_paths:
         Path(p).mkdir(parents=True, exist_ok=True)
         lm(store, ['bind', domain, str(p)])
-    _apply(store, lm(store, ['migration-plan']))
+    lm(store, ['migrate', '--schema'])
     write_json(store / 'sandbox.json', {'sandbox': True})
     extra = [t for t in taxonomy_extra if t not in (json.loads((store / 'tag_taxonomy.json').read_text(encoding='utf-8')).get('tags') or [])]
     if extra:
@@ -57,7 +52,7 @@ def bind(store, domain, path):
 
 
 def handover(src_store, dst_store, domain, bundle):
-    """IT handover: export the leaver's domain and import it into the joiner's store through a reviewed plan."""
+    """IT handover: export the leaver's domain and import it into the joiner's store (one journaled write)."""
     bundle = Path(bundle)
     bundle.parent.mkdir(parents=True, exist_ok=True)
     if bundle.exists():
@@ -68,7 +63,6 @@ def handover(src_store, dst_store, domain, bundle):
         if 'No notes match' in str(e):   # the leaver saved nothing: there is nothing to hand over
             return {'skipped': 'leaver store has no notes'}
         raise
-    plan = lm(dst_store, ['--domain', domain, 'import-plan', str(bundle)])
-    applied = _apply(dst_store, plan, domain) if plan.get('plan_id') else {'skipped': 'no plan', 'plan': plan}
-    return {'export': exported, 'plan': {k: plan.get(k) for k in ('plan_id', 'summary', 'counts', 'conflicts') if k in plan},
-            'apply': applied}
+    imported = lm(dst_store, ['--domain', domain, 'import', str(bundle)])
+    return {'export': exported,
+            'import': {k: imported.get(k) for k in ('operation_id', 'summary', 'created', 'unchanged', 'conflicts') if k in imported}}

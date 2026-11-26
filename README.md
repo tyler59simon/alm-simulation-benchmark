@@ -10,7 +10,7 @@ Run folders are never deleted, so every run stays available for comparison (for 
   - `engine.py`: init, sprints (waves, merges, CI), handovers, quiz, grading, smoke test, isolation.
   - `sessions.py`: the `claude -p` launcher: per-agent `LIVING_MEMORY_ROOT`, budget, timeout, deny rules, stream-json transcript.
   - `clock.py`: the simulated calendar (`init --clock`, see below).
-  - `stores.py`: store bootstrap (bind, then migration plan and apply, then `taxonomy add`, then sandbox marker) and export/import handover. It never calls `setup`, so the real `config.json` is never touched.
+  - `stores.py`: store bootstrap (bind, then `migrate --schema`, then `taxonomy add`, then sandbox marker) and export/import handover. It never calls `setup`, so the real `config.json` is never touched.
   - `gitops.py`: bare origin, one persistent clone per agent, an integration clone that merges and runs CI.
   - `analyze.py`: `metrics.json` (fixed schema), the summary, and `compare`.
   - `config.json`: machine paths (Python, installed LM CLI, claude). Override any key with `SIMKIT_<KEY>`.
@@ -101,7 +101,7 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 - `reminders_by_kind`: the Stop reminders by kind (`fix`, `decision`, ...) from the same stats, summed over the stores and sprints.
 - `recap_days_needed`, `recap_truncated`: the readout's `recap` window is `min(90, simulated run length)` days; `recap_truncated` is true when the run is longer than 90 days.
 - `fix_reminder_followthrough`: sessions with a Stop hook row `reason: reminded:fix` in a store's logs, how many had a successful `capture` command in the same session after it, and the rate.
-- `actors`: the `log` rows by actor (maintenance, auto_resolve, plan, undo, obsidian, `agent:<harness>`, command).
+- `actors`: the `log` rows by actor (maintenance, auto_resolve, plan for operations before 2026-11-26, undo, obsidian, `agent:<harness>`, command).
 - `auto_resolved`: `log` rows with actor `auto_resolve` and event `resolved`.
 - `due_at_quiz`: the review worklist size per store (`due`) and in total at the first quiz.
 - `call_operator_denies`: pre-tool-use hook rows with decision `deny:call-operator` (a leading `&` in a Bash command).
@@ -111,7 +111,7 @@ Use the Python 3.10 interpreter in `simkit/config.json`, with `-I`. Runs are lon
 Schema 3 adds `status_snapshots` (active notes of type `status`, per store and in `totals`) and, for runs with Living Memory on, an end-of-sprint review:
 - After each sprint's last day the harness runs `review --domain D --limit 100` on every agent store and appends `{sprint, agent, counts, items}` to `reviews.jsonl` (a failing store is logged and skipped). The step is `sN/review`, so a resumed run does not repeat it.
 - `init --review-user` (also on `pipeline`) adds a simulated user: for each `archive` row it runs `archive REF` (a direct, undoable write), recorded under `applied`. Merge, update, confirm and other rows are only logged.
-- `metrics.json` `review` (absent when the run has no `reviews.jsonl`): `worklist_precision` (real / judged, null when nothing was judged), `judged`, `unjudged`, `by_kind` {rows, judged, real}, `review_rows` (worklist size by kind per sprint) and `plans_applied`. A row is judged under its first kind against the note as it is in the store at analysis time (the row's title and type when the note is gone): stale and due are real for a status note or a note matching a fact's stale and not its current patterns, false when it matches a current pattern; duplicate is real when the note and its pair match the same fact; warned and noisy are real when the text matches the noise patterns and false when the note holds a current fact. Anything else is unjudged.
+- `metrics.json` `review` (absent when the run has no `reviews.jsonl`): `worklist_precision` (real / judged, null when nothing was judged), `judged`, `unjudged`, `by_kind` {rows, judged, real}, `review_rows` (worklist size by kind per sprint) and `review_archives` (`plans_applied` in runs before 2026-11-26). A row is judged under its first kind against the note as it is in the store at analysis time (the row's title and type when the note is gone): stale and due are real for a status note or a note matching a fact's stale and not its current patterns, false when it matches a current pattern; duplicate is real when the note and its pair match the same fact; warned and noisy are real when the text matches the noise patterns and false when the note holds a current fact. Anything else is unjudged.
 
 ## Work metrics (schema 2)
 `analyze` computes these offline from transcripts, git and stores, so older runs can be re-analyzed at no model cost (keep the old file as `metrics.v1.json` first):
@@ -160,6 +160,6 @@ Copy `scenarios/bank-cobol-springboot`, then change the roster, waves, seed, CI 
 
 ## Known limits
 - Without `--clock` all sessions run on the same real day, so LM's time-based features (review_by dates, staleness, auto-resolve) are not exercised. With it, they are exercised on a simulated calendar, but notes' ages come from the offset, not from real waiting (see above).
-- Governed LM operations (plans and apply) can't be approved in headless mode. Watch for agents trying them.
+- The bulk Living Memory writes (delete, merge, retag, migrate, restore-backup, import, ingest) are not auto-allowed, so a headless agent can't run them. Watch for agents trying them.
 - Fact detection in stores is regex-based. The quiz grades and a qualitative review are the authoritative signals.
 - Runs without `--lm-src` still use the user's real `~/.claude` (hooks and `CLAUDE.md`) and the installed app; see below for testing another Living Memory build.
